@@ -1,0 +1,94 @@
+# Build outputs
+target/
+build/
+out/
+dist/
+bin/
+*.class
+*.jar
+*.war
+*.ear
+
+# Dependency folders / local package caches
+node_modules/
+vendor/
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE / cache files
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+.factorypath
+.metadata/
+.cache/
+.gradle/
+.mvn/timing.properties
+
+# Local secrets / real configuration
+src/main/resources/application.properties
+application.properties
+!src/main/resources/application.properties.example
+.env
+.env.local
+.env.production
+.env.*
+!.env.example
+
+# Service account keys / cloud credentials
+*service-account*.json
+*service_account*.json
+*credentials*.json
+google-credentials.json
+firebase-adminsdk*.json
+gcloud*.json
+aws-credentials*
+azure-credentials*
+
+# Private keys / certificates
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.crt
+*.cer
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+
+# Logs
+logs/
+*.log
+
+# Generated reports
+reports/
+
+# Local database files / backups
+*.mdf
+*.ldf
+*.ndf
+*.bak
+*.db
+*.sqlite
+*.sqlite3
+*.h2.db
+*.mv.db
+*.trace.db
+
+# OS / editor temporary files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.temp
+*.swp
+*.swo
+*~

@@ -1,0 +1,39 @@
+# Copy this file to application.properties and update values for your local machine.
+# Do not commit application.properties because it may contain local credentials.
+
+app.name=AI Code Analyzer Desktop
+
+# SQL Server local example.
+# Make sure SQL Server is running and TCP/IP is enabled on port 1433.
+db.url=jdbc:sqlserver://localhost:1433;databaseName=CodeAnalyzerDb;encrypt=true;trustServerCertificate=true
+db.username=code_analyzer_app
+db.password=${DB_PASSWORD}
+db.login-timeout-seconds=10
+
+crawler.default-delay-millis=1500
+crawler.user-agent=AI-Code-Analyzer-Desktop/1.0
+# Optional. Used by authorized source crawling when you launch Chrome with --remote-debugging-port=9222.
+# You can also set environment variable CHROME_DEVTOOLS_URL.
+crawler.chrome-devtools-url=http://localhost:9222
+
+# Optional Codeforces API credentials. Prefer environment variables CODEFORCES_API_KEY/CODEFORCES_API_SECRET.
+# Required only when you want Codeforces user.status?includeSources=true for your own account.
+codeforces.api-key=
+codeforces.api-secret=
+
+scheduler.auto-crawl-enabled=false
+scheduler.daily-run-time=01:00
+
+# Prefer reading this value from the GEMINI_API_KEY environment variable.
+ai.provider=gemini-rest
+ai.api-key-env=GEMINI_API_KEY
+# Optional fallback for local experiments. Prefer the environment variable and do not commit real keys.
+ai.api-key=
+ai.model=gemini-2.5-flash
+ai.endpoint=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
+ai.timeout-seconds=45
+# EN: Retries 429/5xx using provider retry hints; final 429 pauses the current AI batch.
+# VI: Retry 429/5xx theo gợi ý nhà cung cấp; 429 cuối cùng sẽ tạm dừng batch AI hiện tại.
+ai.max-retries=3
+# true = never call the AI provider; returns deterministic mock analysis for UI/tests.
+ai.mock-mode=false
