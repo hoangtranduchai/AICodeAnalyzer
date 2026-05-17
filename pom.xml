@@ -136,7 +136,8 @@
                 <artifactId>javafx-maven-plugin</artifactId>
                 <version>${javafx.maven.plugin.version}</version>
                 <configuration>
-                    <mainClass>com.example.aicodeanalyzer.app.MainApp</mainClass>
+                    <mainClass>com.example.aicodeanalyzer.app.DesktopLauncher</mainClass>
+                    <runtimePathOption>CLASSPATH</runtimePathOption>
                 </configuration>
             </plugin>
 

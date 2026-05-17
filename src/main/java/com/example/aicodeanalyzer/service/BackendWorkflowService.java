@@ -23,6 +23,7 @@ public class BackendWorkflowService {
 
     private static final int DEFAULT_MAX_SUBMISSIONS = CrawlRequest.UNLIMITED_SUBMISSIONS;
     private static final int DEFAULT_ANALYSIS_LIMIT = 100;
+    private static final Duration ANALYSIS_THROTTLE = Duration.ofMillis(750);
 
     private final CrawlService crawlService;
     private final SourceCodeRepository sourceCodeRepository;
@@ -94,13 +95,27 @@ public class BackendWorkflowService {
                 continue;
             }
             try {
+                emitProgress("Queued AI/rule analysis for source_code_id=" + sourceCode.getSourceCodeId()
+                        + ", submission_id=" + sourceCode.getSubmissionId() + ".");
                 emitProgress("Analyzing source_code_id=" + sourceCode.getSourceCodeId()
                         + ", submission_id=" + sourceCode.getSubmissionId() + ".");
-                AiAnalysisResult ignored = analysisService.analyzeSourceCode(sourceCode.getSourceCodeId());
+                AiAnalysisResult savedResult = analysisService.analyzeSourceCode(sourceCode.getSourceCodeId());
                 analyzedCount++;
                 emitProgress("Analyzed source_code_id=" + sourceCode.getSourceCodeId()
                         + ", submission_id=" + sourceCode.getSubmissionId()
+                        + ", analysis_id=" + savedResult.getAnalysisId()
+                        + ", analyzer=" + blankToDash(savedResult.getAnalyzerType())
+                        + ", model=" + blankToDash(savedResult.getModelName())
+                        + ", dataStructures=" + blankToDash(savedResult.getDataStructures())
+                        + ", algorithms=" + blankToDash(savedResult.getAlgorithms())
+                        + ", aiRisk=" + (savedResult.getAiRiskScore() == null ? "-" : savedResult.getAiRiskScore())
+                        + ", riskLevel=" + blankToDash(savedResult.getAiRiskLevel())
                         + ", totalAnalyzed=" + analyzedCount + ".");
+                if (hasText(savedResult.getSummary())) {
+                    emitProgress("Analysis summary for source_code_id=" + sourceCode.getSourceCodeId()
+                            + ": " + conciseMessage(savedResult.getSummary()));
+                }
+                throttleAnalysisProvider();
             } catch (AiRateLimitException ex) {
                 failedCount++;
                 String conciseMessage = conciseMessage(ex.getMessage());
@@ -138,6 +153,18 @@ public class BackendWorkflowService {
         return value != null && !value.trim().isEmpty();
     }
 
+    private void throttleAnalysisProvider() {
+        if (ANALYSIS_THROTTLE.isZero() || ANALYSIS_THROTTLE.isNegative()) {
+            return;
+        }
+        try {
+            Thread.sleep(ANALYSIS_THROTTLE.toMillis());
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Analysis batch was interrupted while throttling AI provider calls.", ex);
+        }
+    }
+
     private void emitProgress(String message) {
         if (message == null || message.isBlank()) {
             return;
@@ -153,6 +180,10 @@ public class BackendWorkflowService {
         }
         String withoutBody = message.replaceAll("(?s)\\s*Body:\\s*\\{.*", "");
         return withoutBody.length() <= 240 ? withoutBody : withoutBody.substring(0, 237) + "...";
+    }
+
+    private String blankToDash(String value) {
+        return value == null || value.isBlank() ? "-" : value;
     }
 
     public record BackendWorkflowResult(CrawlLog crawlLog, AnalysisQueueResult analysisQueueResult) {

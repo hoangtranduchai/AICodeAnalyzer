@@ -49,6 +49,11 @@ public class DashboardRepository extends JdbcRepositorySupport {
                         JOIN dbo.ai_analysis_results ar ON ar.submission_id = sc.submission_id
                     ) AS analyzed_source_codes,
                     (
+                        SELECT COUNT(*)
+                        FROM dbo.submissions s
+                        WHERE s.source_crawl_status IN ('FAILED', 'SKIPPED')
+                    ) AS source_issue_count,
+                    (
                         SELECT COALESCE(SUM(total_errors), 0)
                         FROM dbo.crawl_logs
                         WHERE started_at >= DATEADD(DAY, -7, SYSUTCDATETIME())
@@ -66,6 +71,7 @@ public class DashboardRepository extends JdbcRepositorySupport {
                     resultSet.getLong("total_submissions"),
                     resultSet.getLong("pending_analysis_sources"),
                     resultSet.getLong("analyzed_source_codes"),
+                    resultSet.getLong("source_issue_count"),
                     resultSet.getLong("recent_crawl_errors")
             );
         } catch (SQLException ex) {

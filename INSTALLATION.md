@@ -132,6 +132,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.programming_handles TO code_analyzer
 GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.submissions TO code_analyzer_app_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.source_codes TO code_analyzer_app_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.ai_analysis_results TO code_analyzer_app_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.analysis_jobs TO code_analyzer_app_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.user_skill_scores TO code_analyzer_app_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.crawl_logs TO code_analyzer_app_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.app_settings TO code_analyzer_app_role;

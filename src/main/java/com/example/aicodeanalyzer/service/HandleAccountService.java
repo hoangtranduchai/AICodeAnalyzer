@@ -5,6 +5,7 @@ import com.example.aicodeanalyzer.exception.DatabaseException;
 import com.example.aicodeanalyzer.model.HandleAccount;
 import com.example.aicodeanalyzer.model.Platform;
 import com.example.aicodeanalyzer.repository.HandleAccountRepository;
+import com.example.aicodeanalyzer.repository.HandleAccountRepository.HandlePipelineStats;
 import com.example.aicodeanalyzer.repository.PlatformRepository;
 import com.example.aicodeanalyzer.util.ValidationUtils;
 
@@ -42,6 +43,10 @@ public class HandleAccountService {
 
     public List<HandleAccount> findAllHandles() {
         return handleAccountRepository.findAll();
+    }
+
+    public List<HandlePipelineStats> findPipelineStats() {
+        return handleAccountRepository.findPipelineStats();
     }
 
     public HandleAccount addHandle(String platformCode, String handle, String notes) {

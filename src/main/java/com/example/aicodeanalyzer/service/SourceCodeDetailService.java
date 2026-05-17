@@ -30,6 +30,17 @@ public class SourceCodeDetailService {
         return sourceCodeDetailRepository.findRecentMetadata(DEFAULT_RECENT_LIMIT);
     }
 
+    public List<SourceCodeDetail> findRecentSourceCodesByHandle(String platformCode, String handle) {
+        if (platformCode == null || platformCode.isBlank() || handle == null || handle.isBlank()) {
+            return List.of();
+        }
+        return sourceCodeDetailRepository.findRecentByHandle(
+                platformCode.trim().toUpperCase(),
+                handle.trim(),
+                DEFAULT_RECENT_LIMIT
+        );
+    }
+
     public Optional<SourceCodeDetail> findBySourceCodeId(long sourceCodeId) {
         return sourceCodeDetailRepository.findBySourceCodeId(sourceCodeId);
     }

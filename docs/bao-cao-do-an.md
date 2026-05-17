@@ -398,7 +398,7 @@ File báo cáo được lưu trong thư mục `reports`. Báo cáo gồm thông 
 - `RuleBasedCodeAnalyzer`
 - `AIDetectionHeuristics`
 - `CodeforcesCrawler`
-- `CrawlerSmokeTestMain` và `GeminiAnalysisSmokeTestMain` cho smoke test thủ công
+- Luồng smoke test thủ công qua UI: `Workspace`, `AI Review`, `Operations`, `Reports`
 - `HandleAccountRepository`
 - `SubmissionRepository`
 - `GeminiAnalyzerService`

@@ -6,6 +6,7 @@ import com.example.aicodeanalyzer.scheduler.SchedulerManager;
 import com.example.aicodeanalyzer.scheduler.SchedulerSettingsService;
 import com.example.aicodeanalyzer.scheduler.SchedulerStatus;
 import com.example.aicodeanalyzer.model.CrawlLog;
+import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -14,9 +15,10 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.layout.FlowPane;
+import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Priority;
-import javafx.scene.layout.TilePane;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 
 import java.time.LocalDateTime;
@@ -99,10 +101,14 @@ public class SchedulerSettingsController {
 
         Button saveScheduleButton = new Button(t("action.saveSchedule"));
         saveScheduleButton.getStyleClass().add("primary-button");
+        saveScheduleButton.setWrapText(true);
+        saveScheduleButton.setAccessibleText(t("action.saveSchedule"));
         saveScheduleButton.setOnAction(event -> saveSchedule());
 
         Button refreshButton = new Button(t("action.refreshStatus"));
         refreshButton.getStyleClass().add("secondary-button");
+        refreshButton.setWrapText(true);
+        refreshButton.setAccessibleText(t("action.refreshStatus"));
         refreshButton.setOnAction(event -> refreshStatus());
 
         FlowPane actions = actionFlow(saveScheduleButton, refreshButton);
@@ -228,10 +234,13 @@ public class SchedulerSettingsController {
     private VBox sectionHeader(String title, String subtitle) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("section-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label subtitleLabel = new Label(subtitle);
         subtitleLabel.getStyleClass().add("muted-text");
         subtitleLabel.setWrapText(true);
+        subtitleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(titleLabel, subtitleLabel);
         box.setSpacing(4);
@@ -241,6 +250,8 @@ public class SchedulerSettingsController {
     private VBox card(String title, Node content) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("card-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(titleLabel, content);
         box.setSpacing(12);
@@ -251,15 +262,40 @@ public class SchedulerSettingsController {
         return box;
     }
 
-    private TilePane split(Node left, Node right) {
-        TilePane box = new TilePane(left, right);
-        box.setHgap(16);
-        box.setVgap(16);
-        box.setPrefColumns(2);
-        box.setPrefTileWidth(520);
-        box.setMaxWidth(Double.MAX_VALUE);
-        box.getStyleClass().add("responsive-split");
-        return box;
+    private GridPane split(Node left, Node right) {
+        GridPane grid = new GridPane();
+        grid.setHgap(16);
+        grid.setVgap(16);
+        grid.setMaxWidth(Double.MAX_VALUE);
+        grid.getStyleClass().add("responsive-split");
+
+        java.util.List<Node> nodes = java.util.List.of(left, right);
+        Runnable updater = () -> {
+            double width = grid.getWidth() <= 0 ? 1200 : grid.getWidth();
+            int columns = width >= 760 ? 2 : 1;
+            grid.getChildren().clear();
+            grid.getColumnConstraints().clear();
+            for (int column = 0; column < columns; column++) {
+                ColumnConstraints constraints = new ColumnConstraints();
+                constraints.setPercentWidth(100.0 / columns);
+                constraints.setHgrow(Priority.ALWAYS);
+                constraints.setFillWidth(true);
+                grid.getColumnConstraints().add(constraints);
+            }
+            for (int index = 0; index < nodes.size(); index++) {
+                Node node = nodes.get(index);
+                if (node instanceof Region region) {
+                    region.setMinWidth(0);
+                    region.setMaxWidth(Double.MAX_VALUE);
+                }
+                GridPane.setHgrow(node, Priority.ALWAYS);
+                GridPane.setFillWidth(node, true);
+                grid.add(node, index % columns, index / columns);
+            }
+        };
+        grid.widthProperty().addListener((observable, oldValue, newValue) -> updater.run());
+        Platform.runLater(updater);
+        return grid;
     }
 
     private FlowPane actionFlow(Node... nodes) {

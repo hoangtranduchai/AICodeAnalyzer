@@ -17,11 +17,13 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.TextArea;
+import javafx.scene.control.Tooltip;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.util.StringConverter;
@@ -47,17 +49,25 @@ public class SourceCodeDetailController {
     private final AnalysisService analysisService;
     private final BiConsumer<String, Boolean> notifier;
     private final I18n i18n;
+    private final ObservableList<SourceCodeDetail> allSourceCodes = FXCollections.observableArrayList();
     private final ObservableList<SourceCodeDetail> sourceCodes = FXCollections.observableArrayList();
     private final Set<Long> loadedSourceCodeIds = new HashSet<>();
+    private final Set<Long> skippedSourceCodeIds = new HashSet<>();
+    private String focusedPlatformCode;
+    private String focusedHandle;
 
     private ComboBox<SourceCodeDetail> sourceSelector;
+    private ComboBox<AnalysisFilter> filterComboBox;
     private Label emptyStateLabel;
     private Label platformLabel;
     private Label handleLabel;
+    private Label remoteIdLabel;
     private Label problemLabel;
     private Label languageLabel;
     private Label verdictLabel;
     private Label submittedAtLabel;
+    private Label sourceStatusLabel;
+    private Label aiStatusLabel;
     private Label sourceStatsLabel;
     private TextArea sourceArea;
     private TextArea analysisArea;
@@ -68,6 +78,7 @@ public class SourceCodeDetailController {
     private FlowPane algorithmBadges;
     private Button copyButton;
     private Button analyzeButton;
+    private Button skipButton;
     private SourceCodeDetail currentDetail;
 
     public SourceCodeDetailController(
@@ -97,25 +108,43 @@ public class SourceCodeDetailController {
         sourceSelector = new ComboBox<>(sourceCodes);
         sourceSelector.setMaxWidth(Double.MAX_VALUE);
         sourceSelector.setPromptText(t("source.selector.prompt"));
+        sourceSelector.setAccessibleText(t("source.selector.prompt"));
         sourceSelector.setConverter(sourceCodeConverter());
         sourceSelector.valueProperty().addListener((observable, oldValue, newValue) -> applyDetail(newValue));
 
+        filterComboBox = new ComboBox<>(FXCollections.observableArrayList(AnalysisFilter.values()));
+        filterComboBox.setMaxWidth(Double.MAX_VALUE);
+        filterComboBox.setConverter(analysisFilterConverter());
+        filterComboBox.setAccessibleText(t("source.filter.all"));
+        filterComboBox.getSelectionModel().select(AnalysisFilter.ALL);
+        filterComboBox.valueProperty().addListener((observable, oldValue, newValue) -> applySourceFilter(true));
+
         Button refreshButton = new Button(t("action.refresh"));
         refreshButton.getStyleClass().add("secondary-button");
+        prepareActionButton(refreshButton);
         refreshButton.setOnAction(event -> refresh(true));
 
         copyButton = new Button(t("source.button.copy"));
         copyButton.getStyleClass().add("secondary-button");
+        prepareActionButton(copyButton);
         copyButton.setOnAction(event -> copyCode());
 
         analyzeButton = new Button(t("source.button.analyze"));
         analyzeButton.getStyleClass().add("primary-button");
+        prepareActionButton(analyzeButton);
         analyzeButton.setOnAction(event -> analyzeSelectedSource());
 
-        FlowPane toolbar = actionFlow(sourceSelector, refreshButton, copyButton, analyzeButton);
+        skipButton = new Button(t("source.button.skip"));
+        skipButton.getStyleClass().add("secondary-button");
+        prepareActionButton(skipButton);
+        skipButton.setOnAction(event -> skipSelectedSource());
+
+        FlowPane toolbar = actionFlow(sourceSelector, filterComboBox, refreshButton, copyButton, analyzeButton, skipButton);
         toolbar.setAlignment(Pos.CENTER_LEFT);
         sourceSelector.setPrefWidth(320);
         sourceSelector.setMinWidth(220);
+        filterComboBox.setPrefWidth(180);
+        filterComboBox.setMinWidth(160);
 
         emptyStateLabel = new Label(t("source.empty"));
         emptyStateLabel.getStyleClass().add("empty-state");
@@ -123,12 +152,16 @@ public class SourceCodeDetailController {
         emptyStateLabel.setVisible(false);
         emptyStateLabel.setManaged(false);
 
+        VBox sourceListContent = new VBox(toolbar, emptyStateLabel, buildMetadataGrid());
+        sourceListContent.setSpacing(12);
+        VBox sourceListPanel = card(t("source.metadata.card"), sourceListContent);
+        sourceListPanel.setMinWidth(320);
+        sourceListPanel.setPrefWidth(390);
+        sourceListPanel.setMaxWidth(520);
+
         VBox screen = new VBox(
-            stateBanner(t("source.banner.title"), t("source.banner.detail")),
-                toolbar,
-                emptyStateLabel,
-                card(t("source.metadata.card"), buildMetadataGrid()),
-                buildSourceAndAnalysisSplit()
+                stateBanner(t("source.banner.title"), t("source.banner.detail")),
+                buildSourceAndAnalysisSplit(sourceListPanel)
         );
         screen.setPadding(new Insets(0));
         screen.setSpacing(18);
@@ -139,13 +172,73 @@ public class SourceCodeDetailController {
         return screen;
     }
 
+    public void refreshSourceList() {
+        if (sourceSelector != null) {
+            if (hasText(focusedPlatformCode) && hasText(focusedHandle)) {
+                showHandleSources(focusedPlatformCode, focusedHandle);
+            } else {
+                refresh(false);
+            }
+        }
+    }
+
+    public void showAllSources() {
+        focusedPlatformCode = null;
+        focusedHandle = null;
+        if (filterComboBox != null) {
+            filterComboBox.getSelectionModel().select(AnalysisFilter.ALL);
+        }
+        refresh(false);
+    }
+
+    public void showHandleSources(String platformCode, String handle) {
+        focusedPlatformCode = platformCode;
+        focusedHandle = handle;
+        if (sourceSelector == null) {
+            return;
+        }
+        emptyStateLabel.setText(t("source.loading"));
+        emptyStateLabel.setVisible(true);
+        emptyStateLabel.setManaged(true);
+
+        Task<List<SourceCodeDetail>> task = new Task<>() {
+            @Override
+            protected List<SourceCodeDetail> call() {
+                return sourceCodeDetailService.findRecentSourceCodesByHandle(platformCode, handle);
+            }
+        };
+
+        task.setOnSucceeded(event -> {
+            loadedSourceCodeIds.clear();
+            allSourceCodes.setAll(task.getValue());
+            applySourceFilter(true);
+            if (sourceCodes.isEmpty()) {
+                emptyStateLabel.setText(t("source.empty.handle", platformCode + "/" + handle));
+            }
+        });
+        task.setOnFailed(event -> {
+            Throwable exception = task.getException();
+            emptyStateLabel.setText(t("source.error.load"));
+            emptyStateLabel.setVisible(true);
+            emptyStateLabel.setManaged(true);
+            notify(exception == null ? t("source.error.load") : exception.getMessage(), false);
+        });
+
+        Thread thread = new Thread(task, "source-code-detail-load-handle");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
     private GridPane buildMetadataGrid() {
         platformLabel = readOnlyValue();
         handleLabel = readOnlyValue();
+        remoteIdLabel = readOnlyValue();
         problemLabel = readOnlyValue();
         languageLabel = readOnlyValue();
         verdictLabel = readOnlyValue();
         submittedAtLabel = readOnlyValue();
+        sourceStatusLabel = readOnlyValue();
+        aiStatusLabel = readOnlyValue();
         sourceStatsLabel = readOnlyValue();
 
         GridPane grid = new GridPane();
@@ -155,22 +248,27 @@ public class SourceCodeDetailController {
 
         addReadOnlyRow(grid, 0, t("source.info.platform"), platformLabel);
         addReadOnlyRow(grid, 1, t("table.handle"), handleLabel);
-        addReadOnlyRow(grid, 2, t("source.info.problem"), problemLabel);
-        addReadOnlyRow(grid, 3, t("source.info.language"), languageLabel);
-        addReadOnlyRow(grid, 4, "Verdict", verdictLabel);
-        addReadOnlyRow(grid, 5, t("source.info.submittedAt"), submittedAtLabel);
-        addReadOnlyRow(grid, 6, t("source.info.size"), sourceStatsLabel);
+        addReadOnlyRow(grid, 2, t("source.info.remoteId"), remoteIdLabel);
+        addReadOnlyRow(grid, 3, t("source.info.problem"), problemLabel);
+        addReadOnlyRow(grid, 4, t("source.info.language"), languageLabel);
+        addReadOnlyRow(grid, 5, "Verdict", verdictLabel);
+        addReadOnlyRow(grid, 6, t("source.info.submittedAt"), submittedAtLabel);
+        addReadOnlyRow(grid, 7, t("source.info.sourceStatus"), sourceStatusLabel);
+        addReadOnlyRow(grid, 8, t("source.info.aiStatus"), aiStatusLabel);
+        addReadOnlyRow(grid, 9, t("source.info.size"), sourceStatsLabel);
         return grid;
     }
 
-    private SplitPane buildSourceAndAnalysisSplit() {
+    private SplitPane buildSourceAndAnalysisSplit(Node sourceListPanel) {
         sourceArea = new TextArea();
         sourceArea.getStyleClass().add("code-area");
         sourceArea.setEditable(false);
         sourceArea.setWrapText(false);
         sourceArea.setPrefRowCount(32);
-        sourceArea.setPrefColumnCount(120);
+        sourceArea.setPrefColumnCount(80);
         sourceArea.setPromptText(t("source.source.prompt"));
+        sourceArea.setAccessibleText(t("source.source.prompt"));
+        sourceArea.setMinWidth(0);
         sourceArea.setMinHeight(360);
 
         analysisArea = new TextArea();
@@ -178,6 +276,8 @@ public class SourceCodeDetailController {
         analysisArea.setWrapText(true);
         analysisArea.setPrefRowCount(12);
         analysisArea.setPromptText(t("source.analysis.prompt"));
+        analysisArea.setAccessibleText(t("source.analysis.prompt"));
+        analysisArea.setMinWidth(0);
         analysisArea.setMinHeight(240);
         analysisArea.getStyleClass().add("compact-summary");
 
@@ -220,9 +320,12 @@ public class SourceCodeDetailController {
         VBox.setVgrow(analysisArea, Priority.ALWAYS);
 
         VBox sourceCard = card(t("table.source"), sourceArea);
+        sourceCard.setMinWidth(360);
         VBox analysisCard = card(t("source.analysis.panel"), insightPanel);
-        SplitPane splitPane = new SplitPane(sourceCard, analysisCard);
-        splitPane.setDividerPositions(0.66);
+        analysisCard.setMinWidth(320);
+        SplitPane splitPane = new SplitPane(sourceListPanel, sourceCard, analysisCard);
+        splitPane.getStyleClass().add("responsive-split");
+        splitPane.setDividerPositions(0.30, 0.70);
         splitPane.setMinHeight(430);
         VBox.setVgrow(splitPane, Priority.ALWAYS);
         return splitPane;
@@ -230,18 +333,17 @@ public class SourceCodeDetailController {
 
     private void refresh(boolean showNotification) {
         try {
+            focusedPlatformCode = null;
+            focusedHandle = null;
             List<SourceCodeDetail> loadedSourceCodes = sourceCodeDetailService.findRecentSourceCodes();
             loadedSourceCodeIds.clear();
-            sourceCodes.setAll(loadedSourceCodes);
-            if (sourceCodes.isEmpty()) {
-                applyDetail(null);
-            } else {
-                sourceSelector.getSelectionModel().selectFirst();
-            }
+            allSourceCodes.setAll(loadedSourceCodes);
+            applySourceFilter(true);
             if (showNotification) {
                 notify(t("source.notify.refreshed"), true);
             }
         } catch (RuntimeException ex) {
+            allSourceCodes.clear();
             sourceCodes.clear();
             applyDetail(null);
             emptyStateLabel.setText(t("source.error.load"));
@@ -259,14 +361,18 @@ public class SourceCodeDetailController {
         emptyStateLabel.setManaged(!hasDetail);
         copyButton.setDisable(!hasDetail || !hasText(detail.codeContent()));
         analyzeButton.setDisable(!hasDetail || !hasText(detail.codeContent()));
+        skipButton.setDisable(!hasDetail);
 
         if (!hasDetail) {
             platformLabel.setText("-");
             handleLabel.setText("-");
+            remoteIdLabel.setText("-");
             problemLabel.setText("-");
             languageLabel.setText("-");
             verdictLabel.setText("-");
             submittedAtLabel.setText("-");
+            sourceStatusLabel.setText("-");
+            aiStatusLabel.setText("-");
             sourceStatsLabel.setText("-");
             sourceArea.clear();
             analysisArea.clear();
@@ -274,12 +380,18 @@ public class SourceCodeDetailController {
             return;
         }
 
+        analyzeButton.setText(detail.latestAnalysis() == null
+                ? t("source.button.analyze")
+                : t("source.button.reanalyze"));
         platformLabel.setText(valueOrDash(detail.platformName()));
         handleLabel.setText(valueOrDash(detail.handle()));
+        remoteIdLabel.setText(valueOrDash(detail.remoteId()));
         problemLabel.setText(detail.problemDisplay());
         languageLabel.setText(valueOrDash(detail.language()));
         verdictLabel.setText(valueOrDash(detail.verdict()));
         submittedAtLabel.setText(detail.submittedAt() == null ? "-" : DATE_TIME_FORMATTER.format(detail.submittedAt()));
+        sourceStatusLabel.setText(formatSourceStatus(detail));
+        aiStatusLabel.setText(formatAiStatus(detail));
         sourceStatsLabel.setText(formatSourceStats(detail));
         analysisArea.setText(formatAnalysis(detail.latestAnalysis()));
         updateAnalysisVisuals(detail.latestAnalysis());
@@ -369,6 +481,8 @@ public class SourceCodeDetailController {
         task.setOnSucceeded(event -> {
             SourceCodeDetail updatedDetail = task.getValue();
             replaceSourceCode(updatedDetail);
+            replaceSourceCodeInAll(updatedDetail);
+            applySourceFilter(false);
             sourceSelector.getSelectionModel().select(updatedDetail);
             applyDetail(updatedDetail);
             notify(t("source.notify.analyzed"), true);
@@ -386,6 +500,16 @@ public class SourceCodeDetailController {
         thread.start();
     }
 
+    private void skipSelectedSource() {
+        if (currentDetail == null || currentDetail.sourceCodeId() == null) {
+            notify(t("source.error.choose"), false);
+            return;
+        }
+        skippedSourceCodeIds.add(currentDetail.sourceCodeId());
+        notify(t("source.notify.skipped"), true);
+        applySourceFilter(true);
+    }
+
     private void replaceSourceCode(SourceCodeDetail updatedDetail) {
         for (int i = 0; i < sourceCodes.size(); i++) {
             SourceCodeDetail item = sourceCodes.get(i);
@@ -395,6 +519,77 @@ public class SourceCodeDetailController {
             }
         }
         sourceCodes.add(0, updatedDetail);
+    }
+
+    private void replaceSourceCodeInAll(SourceCodeDetail updatedDetail) {
+        for (int i = 0; i < allSourceCodes.size(); i++) {
+            SourceCodeDetail item = allSourceCodes.get(i);
+            if (Objects.equals(item.sourceCodeId(), updatedDetail.sourceCodeId())) {
+                allSourceCodes.set(i, updatedDetail);
+                return;
+            }
+        }
+        allSourceCodes.add(0, updatedDetail);
+    }
+
+    private void applySourceFilter(boolean selectFirst) {
+        if (emptyStateLabel == null || platformLabel == null || copyButton == null || analyzeButton == null) {
+            return;
+        }
+        AnalysisFilter filter = filterComboBox == null || filterComboBox.getValue() == null
+                ? AnalysisFilter.ALL
+                : filterComboBox.getValue();
+        Long selectedSourceCodeId = currentDetail == null ? null : currentDetail.sourceCodeId();
+        List<SourceCodeDetail> filtered = allSourceCodes.stream()
+                .filter(detail -> matchesFilter(detail, filter))
+                .toList();
+        sourceCodes.setAll(filtered);
+
+        if (sourceCodes.isEmpty()) {
+            applyDetail(null);
+            emptyStateLabel.setText(t(filter.emptyKey()));
+            return;
+        }
+
+        if (!selectFirst && selectedSourceCodeId != null) {
+            for (SourceCodeDetail detail : sourceCodes) {
+                if (Objects.equals(detail.sourceCodeId(), selectedSourceCodeId)) {
+                    sourceSelector.getSelectionModel().select(detail);
+                    return;
+                }
+            }
+        }
+        sourceSelector.getSelectionModel().selectFirst();
+    }
+
+    private boolean matchesFilter(SourceCodeDetail detail, AnalysisFilter filter) {
+        if (detail == null) {
+            return false;
+        }
+        boolean skipped = detail.sourceCodeId() != null && skippedSourceCodeIds.contains(detail.sourceCodeId());
+        String jobStatus = detail.analysisJobStatus();
+        boolean attention = isStatus(jobStatus, "FAILED", "QUOTA_DELAYED");
+        boolean analyzed = detail.latestAnalysis() != null || isStatus(jobStatus, "SUCCEEDED");
+        boolean pending = !analyzed && (jobStatus == null || isStatus(jobStatus, "PENDING", "RUNNING"));
+        return switch (filter) {
+            case ALL -> !skipped;
+            case PENDING -> !skipped && pending && !attention;
+            case ANALYZED -> !skipped && analyzed;
+            case SKIPPED -> skipped;
+            case ATTENTION -> !skipped && attention;
+        };
+    }
+
+    private boolean isStatus(String value, String... candidates) {
+        if (!hasText(value) || candidates == null) {
+            return false;
+        }
+        for (String candidate : candidates) {
+            if (candidate != null && candidate.equalsIgnoreCase(value.trim())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String formatAnalysis(AiAnalysisResult analysis) {
@@ -504,6 +699,21 @@ public class SourceCodeDetailController {
         return lines + " lines, " + chars + " chars, hash " + valueOrDash(detail.codeHash());
     }
 
+    private String formatSourceStatus(SourceCodeDetail detail) {
+        String status = valueOrDash(detail.sourceCrawlStatus());
+        if (hasText(detail.sourceCrawlError())) {
+            return status + " - " + detail.sourceCrawlError();
+        }
+        return status;
+    }
+
+    private String formatAiStatus(SourceCodeDetail detail) {
+        if (detail.latestAnalysis() != null) {
+            return t("source.status.analyzed") + " #" + detail.latestAnalysis().getAnalysisId();
+        }
+        return valueOrDash(detail.analysisJobStatus());
+    }
+
     private VBox sectionHeader(String title, String subtitle) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("section-title");
@@ -520,6 +730,8 @@ public class SourceCodeDetailController {
     private VBox card(String title, Node content) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("card-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(titleLabel, content);
         box.setSpacing(12);
@@ -539,13 +751,23 @@ public class SourceCodeDetailController {
         return flowPane;
     }
 
+    private void prepareActionButton(Button button) {
+        button.setWrapText(true);
+        button.setMinWidth(0);
+        button.setTooltip(new Tooltip(button.getText()));
+        button.setAccessibleText(button.getText());
+    }
+
     private VBox stateBanner(String title, String detail) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("state-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label detailLabel = new Label(detail);
         detailLabel.getStyleClass().add("state-detail");
         detailLabel.setWrapText(true);
+        detailLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(titleLabel, detailLabel);
         box.setSpacing(4);
@@ -556,9 +778,11 @@ public class SourceCodeDetailController {
     private void addReadOnlyRow(GridPane grid, int row, String label, Label valueLabel) {
         Label labelNode = new Label(label);
         labelNode.getStyleClass().add("form-label");
-        labelNode.setMinWidth(104);
-        labelNode.setPrefWidth(124);
-        labelNode.setMaxWidth(144);
+        labelNode.setWrapText(true);
+        labelNode.setMinHeight(Region.USE_PREF_SIZE);
+        labelNode.setMinWidth(110);
+        labelNode.setPrefWidth(118);
+        labelNode.setMaxWidth(126);
         grid.add(labelNode, 0, row);
         grid.add(valueLabel, 1, row);
         GridPane.setHgrow(valueLabel, Priority.ALWAYS);
@@ -567,7 +791,9 @@ public class SourceCodeDetailController {
     private Label readOnlyValue() {
         Label label = new Label("-");
         label.getStyleClass().add("read-only-value");
+        label.setMinWidth(0);
         label.setMaxWidth(Double.MAX_VALUE);
+        label.setMinHeight(Region.USE_PREF_SIZE);
         label.setWrapText(true);
         return label;
     }
@@ -585,6 +811,20 @@ public class SourceCodeDetailController {
             @Override
             public SourceCodeDetail fromString(String string) {
                 return null;
+            }
+        };
+    }
+
+    private StringConverter<AnalysisFilter> analysisFilterConverter() {
+        return new StringConverter<>() {
+            @Override
+            public String toString(AnalysisFilter filter) {
+                return filter == null ? "" : t(filter.labelKey());
+            }
+
+            @Override
+            public AnalysisFilter fromString(String string) {
+                return AnalysisFilter.ALL;
             }
         };
     }
@@ -614,5 +854,29 @@ public class SourceCodeDetailController {
 
     private String t(String key, Object... args) {
         return i18n.text(key, args);
+    }
+
+    private enum AnalysisFilter {
+        ALL("source.filter.all", "source.empty"),
+        PENDING("source.filter.pending", "source.empty.pending"),
+        ANALYZED("source.filter.analyzed", "source.empty.analyzed"),
+        ATTENTION("source.filter.attention", "source.empty.attention"),
+        SKIPPED("source.filter.skipped", "source.empty.skipped");
+
+        private final String labelKey;
+        private final String emptyKey;
+
+        AnalysisFilter(String labelKey, String emptyKey) {
+            this.labelKey = labelKey;
+            this.emptyKey = emptyKey;
+        }
+
+        private String labelKey() {
+            return labelKey;
+        }
+
+        private String emptyKey() {
+            return emptyKey;
+        }
     }
 }

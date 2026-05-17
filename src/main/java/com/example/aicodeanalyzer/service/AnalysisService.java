@@ -10,6 +10,7 @@ import com.example.aicodeanalyzer.exception.DatabaseException;
 import com.example.aicodeanalyzer.model.AiAnalysisResult;
 import com.example.aicodeanalyzer.model.SourceCodeDetail;
 import com.example.aicodeanalyzer.repository.AiAnalysisResultRepository;
+import com.example.aicodeanalyzer.repository.AnalysisJobRepository;
 import com.example.aicodeanalyzer.repository.SourceCodeDetailRepository;
 import com.example.aicodeanalyzer.repository.SubmissionRepository;
 import org.slf4j.Logger;
@@ -29,6 +30,7 @@ public class AnalysisService {
     private final SubmissionRepository submissionRepository;
     private final SkillScoringService skillScoringService;
     private final CodeAnalyzer codeAnalyzer;
+    private final AnalysisJobRepository analysisJobRepository;
 
     public AnalysisService() {
         this(
@@ -63,7 +65,8 @@ public class AnalysisService {
                 aiAnalysisResultRepository,
                 submissionRepository,
                 codeAnalyzer,
-                new SkillScoringService()
+                new SkillScoringService(),
+                new AnalysisJobRepository()
         );
     }
 
@@ -73,6 +76,24 @@ public class AnalysisService {
             SubmissionRepository submissionRepository,
             CodeAnalyzer codeAnalyzer,
             SkillScoringService skillScoringService
+    ) {
+        this(
+                sourceCodeDetailRepository,
+                aiAnalysisResultRepository,
+                submissionRepository,
+                codeAnalyzer,
+                skillScoringService,
+                new AnalysisJobRepository()
+        );
+    }
+
+    public AnalysisService(
+            SourceCodeDetailRepository sourceCodeDetailRepository,
+            AiAnalysisResultRepository aiAnalysisResultRepository,
+            SubmissionRepository submissionRepository,
+            CodeAnalyzer codeAnalyzer,
+            SkillScoringService skillScoringService,
+            AnalysisJobRepository analysisJobRepository
     ) {
         this.sourceCodeDetailRepository = Objects.requireNonNull(
                 sourceCodeDetailRepository,
@@ -85,16 +106,27 @@ public class AnalysisService {
         this.submissionRepository = Objects.requireNonNull(submissionRepository, "submissionRepository must not be null");
         this.codeAnalyzer = Objects.requireNonNull(codeAnalyzer, "codeAnalyzer must not be null");
         this.skillScoringService = Objects.requireNonNull(skillScoringService, "skillScoringService must not be null");
+        this.analysisJobRepository = Objects.requireNonNull(analysisJobRepository, "analysisJobRepository must not be null");
     }
 
     public AiAnalysisResult analyzeSourceCode(long sourceCodeId) {
         SourceCodeDetail sourceCodeDetail = sourceCodeDetailRepository.findBySourceCodeId(sourceCodeId)
                 .orElseThrow(() -> new DatabaseException("Cannot find source code id " + sourceCodeId + "."));
 
-        AiAnalysisResult analysisResult = analyzeWithConfiguredAnalyzer(sourceCodeDetail);
-        AiAnalysisResult savedResult = aiAnalysisResultRepository.save(analysisResult);
-        refreshSkillScore(savedResult);
-        return savedResult;
+        markJobRunning(sourceCodeDetail);
+        try {
+            AiAnalysisResult analysisResult = analyzeWithConfiguredAnalyzer(sourceCodeDetail);
+            AiAnalysisResult savedResult = aiAnalysisResultRepository.save(analysisResult);
+            markJobSucceeded(sourceCodeId, savedResult.getAnalysisId());
+            refreshSkillScore(savedResult);
+            return savedResult;
+        } catch (AiRateLimitException ex) {
+            markJobQuotaDelayed(sourceCodeId, ex);
+            throw ex;
+        } catch (RuntimeException ex) {
+            markJobFailed(sourceCodeId, ex);
+            throw ex;
+        }
     }
 
     private AiAnalysisResult analyzeWithConfiguredAnalyzer(SourceCodeDetail sourceCodeDetail) {
@@ -151,6 +183,60 @@ public class AnalysisService {
                     ex
             );
         }
+    }
+
+    private void markJobRunning(SourceCodeDetail sourceCodeDetail) {
+        if (sourceCodeDetail.sourceCodeId() == null || sourceCodeDetail.submissionId() == null) {
+            return;
+        }
+        try {
+            if (analysisJobRepository.findBySourceCodeId(sourceCodeDetail.sourceCodeId()).isEmpty()) {
+                analysisJobRepository.markPending(sourceCodeDetail.sourceCodeId(), sourceCodeDetail.submissionId());
+            }
+            analysisJobRepository.markRunning(sourceCodeDetail.sourceCodeId());
+        } catch (RuntimeException ex) {
+            LOGGER.debug("Could not mark analysis job RUNNING for source_code_id={}.",
+                    sourceCodeDetail.sourceCodeId(), ex);
+        }
+    }
+
+    private void markJobSucceeded(long sourceCodeId, Long analysisId) {
+        if (analysisId == null) {
+            return;
+        }
+        try {
+            analysisJobRepository.markSucceeded(sourceCodeId, analysisId);
+        } catch (RuntimeException ex) {
+            LOGGER.debug("Could not mark analysis job SUCCEEDED for source_code_id={}.", sourceCodeId, ex);
+        }
+    }
+
+    private void markJobQuotaDelayed(long sourceCodeId, AiRateLimitException ex) {
+        try {
+            analysisJobRepository.markQuotaDelayed(
+                    sourceCodeId,
+                    java.time.LocalDateTime.now().plus(ex.retryAfter()),
+                    sanitizeMessage(ex.getMessage())
+            );
+        } catch (RuntimeException jobEx) {
+            LOGGER.debug("Could not mark analysis job QUOTA_DELAYED for source_code_id={}.", sourceCodeId, jobEx);
+        }
+    }
+
+    private void markJobFailed(long sourceCodeId, RuntimeException ex) {
+        try {
+            analysisJobRepository.markFailed(sourceCodeId, sanitizeMessage(ex.getMessage()));
+        } catch (RuntimeException jobEx) {
+            LOGGER.debug("Could not mark analysis job FAILED for source_code_id={}.", sourceCodeId, jobEx);
+        }
+    }
+
+    private String sanitizeMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return "Unknown analysis error.";
+        }
+        String sanitized = message.replaceAll("(?i)(password=|token=|api[_-]?key=)[^;\\s]+", "$1****");
+        return sanitized.length() <= 1000 ? sanitized : sanitized.substring(0, 997) + "...";
     }
 
     private boolean hasHandleIdentity(SourceCodeDetail sourceCodeDetail) {

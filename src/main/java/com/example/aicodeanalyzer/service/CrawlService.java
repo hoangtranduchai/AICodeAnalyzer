@@ -3,6 +3,7 @@ package com.example.aicodeanalyzer.service;
 import com.example.aicodeanalyzer.crawler.CodeforcesCrawler;
 import com.example.aicodeanalyzer.crawler.CrawlRequest;
 import com.example.aicodeanalyzer.crawler.CrawlResult;
+import com.example.aicodeanalyzer.crawler.CrawledSubmission;
 import com.example.aicodeanalyzer.crawler.CrawlerRateLimiter;
 import com.example.aicodeanalyzer.crawler.OnlineJudgeCrawler;
 import com.example.aicodeanalyzer.crawler.PlaywrightCdpSourceFetcher;
@@ -97,6 +98,7 @@ public class CrawlService {
         this.sourceCodeRepository = Objects.requireNonNull(sourceCodeRepository, "sourceCodeRepository must not be null");
         this.crawlLogRepository = Objects.requireNonNull(crawlLogRepository, "crawlLogRepository must not be null");
         this.submissionUpsertService = new SubmissionUpsertService(submissionRepository, sourceCodeRepository);
+        this.submissionUpsertService.addProgressListener(this::emitProgress);
         this.crawlersByPlatformCode = mapCrawlers(crawlers);
         this.playwrightCdpSourceFetcher = playwrightCdpSourceFetcher;
     }
@@ -161,8 +163,11 @@ public class CrawlService {
         OnlineJudgeCrawler crawler = crawlerFor(platform.getCode());
 
         LocalDateTime startedAt = LocalDateTime.now();
+        Set<String> knownSubmissionIds = knownSubmissionIds(platform.getCode(), handleAccount.getHandle(), maxSubmissions);
         emitProgress("Crawling handle " + platform.getCode() + "/" + handleAccount.getHandle()
-                + " with maxSubmissions=" + maxSubmissions + ".");
+                + " with maxSubmissions=" + maxSubmissions
+                + ", consentConfirmed=" + hasConfirmedConsent(handleAccount)
+                + ", knownSubmissionIds=" + knownSubmissionIds.size() + ".");
         try {
             CrawlRequest request = new CrawlRequest(
                     handleAccount.getHandle(),
@@ -170,10 +175,12 @@ public class CrawlService {
                     true,
                     hasConfirmedConsent(handleAccount),
                     null,
-                    knownSubmissionIds(platform.getCode(), handleAccount.getHandle(), maxSubmissions)
+                    knownSubmissionIds
             );
             CrawlResult result = crawler.crawl(request);
+            emitFetchedSubmissionDetails(platform.getCode(), result.submissions());
             CrawlResult persistedResult = submissionUpsertService.upsertCrawlResult(handleAccount, result);
+            emitSavedSourceDetails(platform.getCode(), persistedResult.submissions());
             emitProgress("Finished handle " + platform.getCode() + "/" + handleAccount.getHandle()
                     + ". fetched=" + persistedResult.submissions().size()
                     + ", new=" + persistedResult.newCount()
@@ -212,8 +219,11 @@ public class CrawlService {
         OnlineJudgeCrawler crawler = crawlerFor(platform.getCode());
 
         LocalDateTime startedAt = LocalDateTime.now();
+        Set<String> knownSubmissionIds = knownSubmissionIds(platform.getCode(), handleAccount.getHandle(), maxSubmissions);
         emitProgress("Crawling handle " + platform.getCode() + "/" + handleAccount.getHandle()
-                + " with maxSubmissions=" + maxSubmissions + ".");
+                + " with maxSubmissions=" + maxSubmissions
+                + ", consentConfirmed=" + hasConfirmedConsent(handleAccount)
+                + ", knownSubmissionIds=" + knownSubmissionIds.size() + ".");
         try {
             CrawlRequest request = new CrawlRequest(
                     handleAccount.getHandle(),
@@ -221,10 +231,12 @@ public class CrawlService {
                     true,
                     hasConfirmedConsent(handleAccount),
                     null,
-                    knownSubmissionIds(platform.getCode(), handleAccount.getHandle(), maxSubmissions)
+                    knownSubmissionIds
             );
             CrawlResult result = crawler.crawl(request);
+            emitFetchedSubmissionDetails(platform.getCode(), result.submissions());
             CrawlResult persistedResult = submissionUpsertService.upsertCrawlResult(handleAccount, result);
+            emitSavedSourceDetails(platform.getCode(), persistedResult.submissions());
             int sourceUnavailableCount = result.unavailableSourceCount();
             String message = buildSuccessMessage(persistedResult, sourceUnavailableCount);
             emitProgress("Finished handle " + platform.getCode() + "/" + handleAccount.getHandle()
@@ -297,12 +309,19 @@ public class CrawlService {
 
     private Set<String> knownSubmissionIds(String platformCode, String handle, int maxSubmissions) {
         if (maxSubmissions <= 0 || maxSubmissions == CrawlRequest.UNLIMITED_SUBMISSIONS) {
-            return submissionRepository.findSubmissionIdsByPlatformAndHandle(platformCode, handle);
+            Set<String> sourceCrawledIds = submissionRepository
+                    .findSubmissionIdsByPlatformAndHandleWithCrawledSource(platformCode, handle);
+            Set<String> allKnownIds = submissionRepository.findSubmissionIdsByPlatformAndHandle(platformCode, handle);
+            int retryableKnown = Math.max(0, allKnownIds.size() - sourceCrawledIds.size());
+            if (retryableKnown > 0) {
+                emitProgress("Will retry source crawl for " + retryableKnown
+                        + " known " + normalizeCode(platformCode) + " submission(s) whose source is not CRAWLED yet.");
+            }
+            return sourceCrawledIds;
         }
         int limit = Math.max(maxSubmissions, 1);
-        return submissionRepository.findRecentByPlatformAndHandle(platformCode, handle, limit).stream()
-                .map(submission -> submission.getPlatformSubmissionId())
-                .filter(value -> value != null && !value.isBlank())
+        return submissionRepository.findSubmissionIdsByPlatformAndHandleWithCrawledSource(platformCode, handle).stream()
+                .limit(limit)
                 .collect(Collectors.toSet());
     }
 
@@ -414,6 +433,10 @@ public class CrawlService {
         return message.replaceAll("(?i)(password=|token=|api[_-]?key=)[^;\\s]+", "$1****");
     }
 
+    private boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
     private void emitProgress(String message) {
         if (message == null || message.isBlank()) {
             return;
@@ -430,5 +453,60 @@ public class CrawlService {
             emitProgress("Could not update last crawled time for handle_id=" + handleId
                     + ". Reason: " + sanitizeMessage(ex.getMessage()));
         }
+    }
+
+    private void emitSavedSourceDetails(String platformCode, List<CrawledSubmission> submissions) {
+        if (submissions == null || submissions.isEmpty()) {
+            return;
+        }
+        for (CrawledSubmission crawledSubmission : submissions) {
+            if (crawledSubmission == null || !hasText(crawledSubmission.sourceCode())) {
+                continue;
+            }
+            try {
+                submissionRepository.findByPlatformAndRemoteSubmissionId(
+                                normalizeCode(platformCode),
+                                crawledSubmission.platformSubmissionId()
+                        )
+                        .flatMap(submission -> sourceCodeRepository.findBySubmissionId(submission.getSubmissionId()))
+                        .ifPresent(source -> emitProgress("Crawled source_code_id=" + source.getSourceCodeId()
+                                + ", submission_id=" + source.getSubmissionId()
+                                + ", remote_id=" + crawledSubmission.platformSubmissionId() + "."));
+            } catch (RuntimeException ex) {
+                emitProgress("Could not resolve saved source id for remote_id="
+                        + crawledSubmission.platformSubmissionId()
+                        + ". Reason: " + sanitizeMessage(ex.getMessage()));
+            }
+        }
+    }
+
+    private void emitFetchedSubmissionDetails(String platformCode, List<CrawledSubmission> submissions) {
+        if (submissions == null || submissions.isEmpty()) {
+            emitProgress("Crawler returned no candidate submissions to persist.");
+            return;
+        }
+        for (CrawledSubmission submission : submissions) {
+            if (submission == null) {
+                continue;
+            }
+            emitProgress("Fetched submission metadata platform=" + normalizeCode(platformCode)
+                    + ", remote_id=" + blankToDash(submission.platformSubmissionId())
+                    + ", problem=" + blankToDash(submission.problemCode())
+                    + ", name=" + blankToDash(submission.problemName())
+                    + ", language=" + blankToDash(submission.language())
+                    + ", verdict=" + blankToDash(submission.verdict())
+                    + ", submittedAt=" + (submission.submittedAt() == null ? "-" : submission.submittedAt())
+                    + ", sourceAvailability=" + submission.sourceAvailability()
+                    + ", sourceOrigin=" + submission.sourceOrigin()
+                    + ".");
+            if (!hasText(submission.sourceCode()) && hasText(submission.sourceUnavailableReason())) {
+                emitProgress("Source unavailable for remote_id=" + blankToDash(submission.platformSubmissionId())
+                        + ". Reason: " + sanitizeMessage(submission.sourceUnavailableReason()));
+            }
+        }
+    }
+
+    private String blankToDash(String value) {
+        return value == null || value.isBlank() ? "-" : value;
     }
 }

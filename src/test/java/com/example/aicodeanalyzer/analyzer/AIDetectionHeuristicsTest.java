@@ -133,16 +133,20 @@ class AIDetectionHeuristicsTest {
                 "CODEFORCES",
                 "Codeforces",
                 "tourist",
+                "remote-" + submissionId,
                 "P" + submissionId,
                 "Problem " + submissionId,
                 "GNU C++17",
                 "OK",
                 submittedAt,
+                "CRAWLED",
+                null,
                 code,
                 "hash-" + submissionId,
                 code.split("\\R", -1).length,
                 code.length(),
                 submittedAt.plusMinutes(1),
+                null,
                 null
         );
     }

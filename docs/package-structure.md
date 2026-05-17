@@ -42,7 +42,6 @@ Base package: `com.example.aicodeanalyzer`
 - `SubmissionUpsertService`: Duplicate-safe persistence for crawled/imported submissions and source code.
 - `CrawlService`: Coordinates crawler adapters and crawl persistence.
 - `AnalysisService`: Coordinates source code analyzers and stores results.
-- `GeminiAnalysisSmokeTestMain`: Manual smoke test for analyzing one DB source row and saving the result.
 - `SkillScoringService`: Aggregates analysis into user skill scores.
 - `DashboardService`: Builds dashboard metrics and chart datasets.
 - `ReportService`: Builds and exports reports.
@@ -55,7 +54,6 @@ Base package: `com.example.aicodeanalyzer`
 - `VJudgeCrawler`: VJudge status crawler with authorized source page/snapshot fallback.
 - `SourceFetcher`: Common source acquisition contract.
 - `PlaywrightCdpSourceFetcher`: Reads source pages through the user's authorized Chrome CDP bot profile.
-- `CrawlerSmokeTestMain`: Manual smoke test for fetching source pages through the Chrome CDP bot.
 - `GeminiImageOcrClient`: OCR fallback for authorized VJudge source snapshots.
 - `SourceFetchResult`: Source fetch status, origin, code text, and reason.
 - `SourceAvailability`: Detailed source states such as `AVAILABLE`, `LOGIN_REQUIRED`, `CAPTCHA_REQUIRED`, and `OCR_FAILED`.

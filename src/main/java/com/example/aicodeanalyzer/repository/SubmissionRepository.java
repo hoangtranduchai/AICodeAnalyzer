@@ -231,6 +231,37 @@ public class SubmissionRepository extends JdbcRepositorySupport {
         }
     }
 
+    public Set<String> findSubmissionIdsByPlatformAndHandleWithCrawledSource(String platformCode, String handle) {
+        String sql = """
+                SELECT s.platform_submission_id
+                FROM dbo.submissions s
+                JOIN dbo.programming_handles h ON h.handle_id = s.handle_id
+                JOIN dbo.platforms p ON p.platform_id = h.platform_id
+                WHERE p.code = ?
+                  AND h.handle = ?
+                  AND s.platform_submission_id IS NOT NULL
+                  AND s.source_crawl_status = 'CRAWLED'
+                """;
+
+        Set<String> submissionIds = new java.util.HashSet<>();
+        try (Connection connection = connectionFactory.createConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, platformCode);
+            statement.setString(2, handle);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    String value = resultSet.getString("platform_submission_id");
+                    if (value != null && !value.isBlank()) {
+                        submissionIds.add(value);
+                    }
+                }
+            }
+            return submissionIds;
+        } catch (SQLException ex) {
+            throw databaseException("finding source-crawled submission ids by platform and handle", ex);
+        }
+    }
+
     public Submission saveSubmissionIfNotExists(Submission submission) {
         Optional<Submission> existingSubmission = findByHandlePlatformAndRemoteSubmissionId(
                 submission.getHandleId(),
@@ -292,12 +323,34 @@ public class SubmissionRepository extends JdbcRepositorySupport {
     }
 
     public boolean delete(long submissionId) {
-        String sql = "DELETE FROM dbo.submissions WHERE submission_id = ?";
+        String deleteJobsSql = "DELETE FROM dbo.analysis_jobs WHERE submission_id = ?";
+        String deleteAnalysisSql = "DELETE FROM dbo.ai_analysis_results WHERE submission_id = ?";
+        String deleteSourceSql = "DELETE FROM dbo.source_codes WHERE submission_id = ?";
+        String deleteSubmissionSql = "DELETE FROM dbo.submissions WHERE submission_id = ?";
 
-        try (Connection connection = connectionFactory.createConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setLong(1, submissionId);
-            return statement.executeUpdate() > 0;
+        try (Connection connection = connectionFactory.createConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement deleteJobs = connection.prepareStatement(deleteJobsSql);
+                 PreparedStatement deleteAnalysis = connection.prepareStatement(deleteAnalysisSql);
+                 PreparedStatement deleteSource = connection.prepareStatement(deleteSourceSql);
+                 PreparedStatement deleteSubmission = connection.prepareStatement(deleteSubmissionSql)) {
+                deleteJobs.setLong(1, submissionId);
+                deleteJobs.executeUpdate();
+
+                deleteAnalysis.setLong(1, submissionId);
+                deleteAnalysis.executeUpdate();
+
+                deleteSource.setLong(1, submissionId);
+                deleteSource.executeUpdate();
+
+                deleteSubmission.setLong(1, submissionId);
+                boolean deleted = deleteSubmission.executeUpdate() > 0;
+                connection.commit();
+                return deleted;
+            } catch (SQLException ex) {
+                connection.rollback();
+                throw ex;
+            }
         } catch (SQLException ex) {
             throw databaseException("deleting submission", ex);
         }
@@ -351,8 +404,7 @@ public class SubmissionRepository extends JdbcRepositorySupport {
                        s.contest_id, s.language, s.verdict, s.submitted_at, s.execution_time_ms, s.memory_bytes,
                        s.problem_rating, s.problem_tags, s.source_url, s.created_at, s.updated_at
                 FROM dbo.submissions s
-                JOIN dbo.programming_handles h ON h.platform_id = s.platform_id
-                WHERE h.handle_id = ? AND s.platform_submission_id = ?
+              WHERE s.handle_id = ? AND s.platform_submission_id = ?
                 """;
 
         try (Connection connection = connectionFactory.createConnection();

@@ -243,12 +243,29 @@ public class AiAnalysisResultRepository extends JdbcRepositorySupport {
     }
 
     public boolean delete(long analysisId) {
-        String sql = "DELETE FROM dbo.ai_analysis_results WHERE analysis_id = ?";
+        String clearJobsSql = """
+                UPDATE dbo.analysis_jobs
+                SET last_analysis_id = NULL,
+                    updated_at = SYSUTCDATETIME()
+                WHERE last_analysis_id = ?
+                """;
+        String deleteAnalysisSql = "DELETE FROM dbo.ai_analysis_results WHERE analysis_id = ?";
 
-        try (Connection connection = connectionFactory.createConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setLong(1, analysisId);
-            return statement.executeUpdate() > 0;
+        try (Connection connection = connectionFactory.createConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement clearJobs = connection.prepareStatement(clearJobsSql);
+                 PreparedStatement deleteAnalysis = connection.prepareStatement(deleteAnalysisSql)) {
+                clearJobs.setLong(1, analysisId);
+                clearJobs.executeUpdate();
+
+                deleteAnalysis.setLong(1, analysisId);
+                boolean deleted = deleteAnalysis.executeUpdate() > 0;
+                connection.commit();
+                return deleted;
+            } catch (SQLException ex) {
+                connection.rollback();
+                throw ex;
+            }
         } catch (SQLException ex) {
             throw databaseException("deleting AI analysis result", ex);
         }

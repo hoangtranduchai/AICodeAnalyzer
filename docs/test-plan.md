@@ -30,7 +30,7 @@
 | IT-002 | Kiểm tra lưu handle qua service/repository | Platform `CODEFORCES`, handle `demo_cf_test` | Gọi `HandleAccountService.addHandle()` | Bản ghi xuất hiện trong `programming_handles`, không trùng platform + handle | Planned |
 | IT-003 | Kiểm tra transaction lưu submission + source | Submission mới có source code | Gọi service lưu transaction | Submission và source cùng được lưu; nếu source lỗi thì rollback | Planned |
 | IT-004 | Kiểm tra upsert chống trùng submission | Crawl 2 lần cùng `platform + remote_submission_id` | Gọi `BackendWorkflowService.runOnce()` 2 lần với crawler giả | Lần 1 lưu submission/source/analysis; lần 2 không tạo trùng analysis | Passed |
-| IT-005 | Kiểm tra phân tích source và lưu DB | Source code hợp lệ trong DB | Chạy `mvn -q exec:java "-Dexec.mainClass=com.example.aicodeanalyzer.service.GeminiAnalysisSmokeTestMain" "-Dexec.args=latest"` | Có bản ghi mới trong `ai_analysis_results` với analyzer Gemini hoặc rule-based theo cấu hình | Passed |
+| IT-005 | Kiểm tra phân tích source và lưu DB | Source code hợp lệ trong DB | Mở `AI Review`, chọn source và bấm Analyze/Re-analyze hoặc chạy workflow `Crawl & Analyze Now` | Có bản ghi mới trong `ai_analysis_results` với analyzer Gemini hoặc rule-based theo cấu hình | Passed |
 | IT-006 | Kiểm tra chấm điểm handle và lưu DB | Handle có submissions + analyses | Gọi workflow phân tích hoặc `SkillScoringService.calculateAndSave(handleId)` | Có bản ghi trong `user_skill_scores`, điểm nằm trong 0-100 | Passed |
 | IT-007 | Kiểm tra build dữ liệu báo cáo | Khoảng ngày `2026-04-26` đến `2026-05-13`, 5 handle demo | Gọi `ReportDataBuilder.build()` | Trả đủ danh sách handle, thống kê, scores, feedback | Planned |
 
@@ -131,7 +131,7 @@
 | AT-001 | Cài đặt và khởi động ứng dụng | Java 21, Maven, SQL Server local | Chạy schema, cấu hình properties, `mvn javafx:run` | App mở thành công, kết nối DB được | Planned |
 | AT-002 | Nhập 5 nick demo | `sql/ai-code-analyzer-complete.sql` | Nhập nick tại `Workspace` | Danh sách nick và crawl log hiển thị đúng | Planned |
 | AT-003 | Crawl trực tiếp dữ liệu | Codeforces/VJudge demo | Chạy crawl trực tiếp | Submission metadata/source được lưu, log thành công/thất bại rõ ràng | Planned |
-| AT-004 | Phân tích source code | Source code demo đã crawl trong DB | Chạy `mvn -q exec:java "-Dexec.mainClass=com.example.aicodeanalyzer.service.GeminiAnalysisSmokeTestMain" "-Dexec.args=latest"` | Có analysis result gồm algorithms, DS, AI generated probability và lưu DB | Passed |
+| AT-004 | Phân tích source code | Source code demo đã crawl trong DB | Mở `AI Review`, chọn source và bấm Analyze/Re-analyze | Có analysis result gồm algorithms, DS, AI generated probability và lưu DB | Passed |
 | AT-005 | Tính điểm năng lực | 5 nick demo | Chạy `SkillScoringService` hoặc dùng data demo | Có DS/Algorithm/Problem/Quality/Consistency/AI Risk/Overall 0-100 | Planned |
 | AT-006 | Xem bảng đánh giá | DB có demo data | Mở `Reports` | Hiển thị bảng điểm, preview và biểu đồ | Planned |
 | AT-007 | Scheduler chạy tự động | Auto crawl enabled, giờ chạy gần hiện tại | Lưu cấu hình, chờ trigger | Job chạy đúng giờ, không chạy song song, có crawl log | Planned |

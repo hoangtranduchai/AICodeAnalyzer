@@ -8,7 +8,9 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -18,7 +20,8 @@ import java.util.List;
 public class VJudgeCrawler extends AbstractHttpCrawler {
     private static final String PLATFORM_CODE = "VJUDGE";
     private static final String BASE_URL = "https://vjudge.net";
-        private static final String SOURCE_NOT_AVAILABLE_REASON =
+    private static final int UNLIMITED_PAGE_SIZE = 100;
+    private static final String SOURCE_NOT_AVAILABLE_REASON =
             "VJudge source could not be fetched from public/authorized web pages. Check Chrome session or OCR settings.";
 
     private final ObjectMapper objectMapper;
@@ -74,24 +77,34 @@ public class VJudgeCrawler extends AbstractHttpCrawler {
             throw new CrawlException("VJudge private data crawl requires explicit valid user consent.");
         }
 
-        String body = getText(buildStatusUri(request), request.requestTimeout());
-        JsonNode root = parseJson(body);
-        JsonNode data = root.path("data");
-        if (!data.isArray()) {
-            return new CrawlResult(
-                    PLATFORM_CODE,
-                    request.handle(),
-                    List.of(),
-                    List.of("VJudge did not return public status JSON. No scraping/login bypass was attempted."),
-                    LocalDateTime.now()
-            );
-        }
-
         List<CrawledSubmission> submissions = new ArrayList<>();
         int returnedCount = 0;
-        for (JsonNode row : data) {
-            returnedCount++;
-            mapStatusRow(row, request).ifPresent(submissions::add);
+        int start = 0;
+        int length = request.isUnlimited() ? UNLIMITED_PAGE_SIZE : Math.max(1, request.maxSubmissions());
+        while (true) {
+            String body = getText(buildStatusUri(request, start, length), request.requestTimeout());
+            JsonNode root = parseJson(body);
+            JsonNode data = root.path("data");
+            if (!data.isArray()) {
+                return new CrawlResult(
+                        PLATFORM_CODE,
+                        request.handle(),
+                        List.of(),
+                        List.of("VJudge did not return public status JSON. No scraping/login bypass was attempted."),
+                        LocalDateTime.now()
+                );
+            }
+
+            int pageRows = data.size();
+            for (JsonNode row : data) {
+                returnedCount++;
+                mapStatusRow(row, request).ifPresent(submissions::add);
+            }
+
+            if (!request.isUnlimited() || pageRows < length || pageRows == 0) {
+                break;
+            }
+            start += pageRows;
         }
 
         List<String> warnings = new ArrayList<>();
@@ -105,10 +118,10 @@ public class VJudgeCrawler extends AbstractHttpCrawler {
         return new CrawlResult(PLATFORM_CODE, request.handle(), submissions, warnings, LocalDateTime.now());
     }
 
-    private URI buildStatusUri(CrawlRequest request) {
+    private URI buildStatusUri(CrawlRequest request, int start, int length) {
         String encodedHandle = URLEncoder.encode(request.handle(), StandardCharsets.UTF_8);
-        String length = request.isUnlimited() ? "-1" : String.valueOf(request.maxSubmissions());
-        String uri = BASE_URL + "/status/data?draw=1&start=0&length=" + length
+        String uri = BASE_URL + "/status/data?draw=1&start=" + Math.max(0, start)
+                + "&length=" + Math.max(1, length)
                 + "&un=" + encodedHandle;
         return URI.create(uri);
     }
@@ -167,14 +180,14 @@ public class VJudgeCrawler extends AbstractHttpCrawler {
                 runId,
                 firstText(row, "probNum", "problem", "problemId"),
                 firstText(row, "title", "problemTitle", "probNum"),
-                firstText(row, "contestId"),
-                firstText(row, "language", "lang"),
+                firstText(row, "contestId", "contestNum"),
+                firstText(row, "language", "lang", "languageCanonical"),
                 normalizeVerdict(firstText(row, "status", "result")),
+                localDateTimeFromEpoch(firstText(row, "time", "submittedAt", "submitTime")),
+                integerFromText(firstText(row, "runtime", "timeConsumedMillis", "executionTimeMs")),
+                longFromText(firstText(row, "memory", "memoryBytes", "memoryKb")),
                 null,
-                integerFromText(firstText(row, "time", "runtime")),
-                null,
-                null,
-                firstText(row, "oj", "remoteOj"),
+                firstText(row, "oj", "remoteOj", "sourceOj"),
                 solutionUrl(runId),
                 sourceFetchResult.availability(),
                 sourceFetchResult.origin(),
@@ -238,6 +251,26 @@ public class VJudgeCrawler extends AbstractHttpCrawler {
             return null;
         }
         return Integer.parseInt(digits);
+    }
+
+    private Long longFromText(String value) {
+        if (value == null) {
+            return null;
+        }
+        String digits = value.replaceAll("[^0-9]", "");
+        if (digits.isBlank()) {
+            return null;
+        }
+        return Long.parseLong(digits);
+    }
+
+    private LocalDateTime localDateTimeFromEpoch(String value) {
+        Long epochValue = longFromText(value);
+        if (epochValue == null || epochValue <= 0) {
+            return null;
+        }
+        long seconds = epochValue > 10_000_000_000L ? epochValue / 1000L : epochValue;
+        return LocalDateTime.ofInstant(Instant.ofEpochSecond(seconds), ZoneOffset.UTC);
     }
 
     private String normalizeVerdict(String verdict) {

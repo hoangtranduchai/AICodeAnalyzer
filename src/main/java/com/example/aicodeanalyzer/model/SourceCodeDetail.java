@@ -11,22 +11,27 @@ public record SourceCodeDetail(
         String platformCode,
         String platformName,
         String handle,
+        String remoteId,
         String problemCode,
         String problemName,
         String language,
         String verdict,
         LocalDateTime submittedAt,
+        String sourceCrawlStatus,
+        String sourceCrawlError,
         String codeContent,
         String codeHash,
         Integer lineCount,
         Integer charCount,
         LocalDateTime fetchedAt,
-        AiAnalysisResult latestAnalysis
+        AiAnalysisResult latestAnalysis,
+        String analysisJobStatus
 ) {
     public String displayLabel() {
-        return "%s / %s / %s".formatted(
+        return "%s / %s / %s / %s".formatted(
                 valueOrDash(platformName),
                 valueOrDash(handle),
+                valueOrDash(remoteId),
                 valueOrDash(problemCode)
         );
     }

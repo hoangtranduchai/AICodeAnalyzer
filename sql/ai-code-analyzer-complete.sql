@@ -109,7 +109,7 @@ BEGIN
         updated_at DATETIME2(0) NOT NULL CONSTRAINT DF_submissions_updated_at DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_submissions PRIMARY KEY CLUSTERED (submission_id),
         CONSTRAINT FK_submissions_platform FOREIGN KEY (platform_id) REFERENCES dbo.platforms(platform_id),
-        CONSTRAINT FK_submissions_handle FOREIGN KEY (handle_id) REFERENCES dbo.programming_handles(handle_id),
+        CONSTRAINT FK_submissions_handle FOREIGN KEY (handle_id) REFERENCES dbo.programming_handles(handle_id) ON DELETE CASCADE,
         CONSTRAINT UQ_submissions_platform_remote UNIQUE (platform_id, platform_submission_id),
         CONSTRAINT CK_submissions_source_crawl_status CHECK (
             source_crawl_status IN ('PENDING', 'CRAWLED', 'FAILED', 'SKIPPED')
@@ -163,7 +163,7 @@ BEGIN
         created_at DATETIME2(0) NOT NULL CONSTRAINT DF_source_codes_created_at DEFAULT SYSUTCDATETIME(),
         updated_at DATETIME2(0) NOT NULL CONSTRAINT DF_source_codes_updated_at DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_source_codes PRIMARY KEY CLUSTERED (source_code_id),
-        CONSTRAINT FK_source_codes_submission FOREIGN KEY (submission_id) REFERENCES dbo.submissions(submission_id),
+        CONSTRAINT FK_source_codes_submission FOREIGN KEY (submission_id) REFERENCES dbo.submissions(submission_id) ON DELETE CASCADE,
         CONSTRAINT UQ_source_codes_submission UNIQUE (submission_id)
     );
 END
@@ -189,9 +189,38 @@ BEGIN
         created_at DATETIME2(0) NOT NULL CONSTRAINT DF_ai_analysis_results_created_at DEFAULT SYSUTCDATETIME(),
         updated_at DATETIME2(0) NOT NULL CONSTRAINT DF_ai_analysis_results_updated_at DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_ai_analysis_results PRIMARY KEY CLUSTERED (analysis_id),
-        CONSTRAINT FK_ai_analysis_results_submission FOREIGN KEY (submission_id) REFERENCES dbo.submissions(submission_id),
+        CONSTRAINT FK_ai_analysis_results_submission FOREIGN KEY (submission_id) REFERENCES dbo.submissions(submission_id) ON DELETE CASCADE,
         CONSTRAINT CK_ai_analysis_results_code_quality_score CHECK (code_quality_score IS NULL OR code_quality_score BETWEEN 0 AND 100),
         CONSTRAINT CK_ai_analysis_results_ai_risk_score CHECK (ai_risk_score IS NULL OR ai_risk_score BETWEEN 0 AND 100)
+    );
+END
+GO
+
+IF OBJECT_ID(N'dbo.analysis_jobs', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.analysis_jobs (
+        analysis_job_id BIGINT IDENTITY(1,1) NOT NULL,
+        source_code_id BIGINT NOT NULL,
+        submission_id BIGINT NOT NULL,
+        status VARCHAR(30) NOT NULL CONSTRAINT DF_analysis_jobs_status DEFAULT ('PENDING'),
+        attempt_count INT NOT NULL CONSTRAINT DF_analysis_jobs_attempt_count DEFAULT (0),
+        next_retry_at DATETIME2(0) NULL,
+        started_at DATETIME2(0) NULL,
+        finished_at DATETIME2(0) NULL,
+        last_analysis_id BIGINT NULL,
+        last_error NVARCHAR(1000) NULL,
+        created_at DATETIME2(0) NOT NULL CONSTRAINT DF_analysis_jobs_created_at DEFAULT SYSUTCDATETIME(),
+        updated_at DATETIME2(0) NOT NULL CONSTRAINT DF_analysis_jobs_updated_at DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_analysis_jobs PRIMARY KEY CLUSTERED (analysis_job_id),
+        CONSTRAINT UQ_analysis_jobs_source UNIQUE (source_code_id),
+        CONSTRAINT FK_analysis_jobs_source FOREIGN KEY (source_code_id)
+            REFERENCES dbo.source_codes(source_code_id),
+        CONSTRAINT FK_analysis_jobs_submission FOREIGN KEY (submission_id)
+            REFERENCES dbo.submissions(submission_id) ON DELETE CASCADE,
+        CONSTRAINT FK_analysis_jobs_last_analysis FOREIGN KEY (last_analysis_id)
+            REFERENCES dbo.ai_analysis_results(analysis_id),
+        CONSTRAINT CK_analysis_jobs_status
+            CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'QUOTA_DELAYED', 'SKIPPED'))
     );
 END
 GO
@@ -215,7 +244,7 @@ BEGIN
         created_at DATETIME2(0) NOT NULL CONSTRAINT DF_user_skill_scores_created_at DEFAULT SYSUTCDATETIME(),
         updated_at DATETIME2(0) NOT NULL CONSTRAINT DF_user_skill_scores_updated_at DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_user_skill_scores PRIMARY KEY CLUSTERED (score_id),
-        CONSTRAINT FK_user_skill_scores_handle FOREIGN KEY (handle_id) REFERENCES dbo.programming_handles(handle_id),
+        CONSTRAINT FK_user_skill_scores_handle FOREIGN KEY (handle_id) REFERENCES dbo.programming_handles(handle_id) ON DELETE CASCADE,
         CONSTRAINT UQ_user_skill_scores_handle_period UNIQUE (handle_id, period_start, period_end),
         CONSTRAINT CK_user_skill_scores_data_structure CHECK (data_structure_score IS NULL OR data_structure_score BETWEEN 0 AND 100),
         CONSTRAINT CK_user_skill_scores_algorithm CHECK (algorithm_score IS NULL OR algorithm_score BETWEEN 0 AND 100),
@@ -289,6 +318,83 @@ BEGIN
 END
 GO
 
+-- ============================================================
+-- Normalize foreign keys for existing databases
+-- ============================================================
+
+IF OBJECT_ID(N'dbo.programming_handles', N'U') IS NOT NULL
+   AND OBJECT_ID(N'dbo.submissions', N'U') IS NOT NULL
+   AND OBJECT_ID(N'dbo.source_codes', N'U') IS NOT NULL
+   AND OBJECT_ID(N'dbo.ai_analysis_results', N'U') IS NOT NULL
+   AND OBJECT_ID(N'dbo.user_skill_scores', N'U') IS NOT NULL
+BEGIN
+    IF OBJECT_ID(N'dbo.FK_ai_analysis_results_submission', N'F') IS NOT NULL
+        EXEC(N'ALTER TABLE dbo.ai_analysis_results DROP CONSTRAINT FK_ai_analysis_results_submission;');
+
+    EXEC(N'
+    ALTER TABLE dbo.ai_analysis_results WITH CHECK
+    ADD CONSTRAINT FK_ai_analysis_results_submission
+    FOREIGN KEY (submission_id) REFERENCES dbo.submissions(submission_id)
+    ON DELETE CASCADE;
+    ');
+
+    IF OBJECT_ID(N'dbo.FK_source_codes_submission', N'F') IS NOT NULL
+        EXEC(N'ALTER TABLE dbo.source_codes DROP CONSTRAINT FK_source_codes_submission;');
+
+    EXEC(N'
+    ALTER TABLE dbo.source_codes WITH CHECK
+    ADD CONSTRAINT FK_source_codes_submission
+    FOREIGN KEY (submission_id) REFERENCES dbo.submissions(submission_id)
+    ON DELETE CASCADE;
+    ');
+
+    IF OBJECT_ID(N'dbo.FK_submissions_handle', N'F') IS NOT NULL
+        EXEC(N'ALTER TABLE dbo.submissions DROP CONSTRAINT FK_submissions_handle;');
+
+    EXEC(N'
+    ALTER TABLE dbo.submissions WITH CHECK
+    ADD CONSTRAINT FK_submissions_handle
+    FOREIGN KEY (handle_id) REFERENCES dbo.programming_handles(handle_id)
+    ON DELETE CASCADE;
+    ');
+
+    IF OBJECT_ID(N'dbo.FK_user_skill_scores_handle', N'F') IS NOT NULL
+        EXEC(N'ALTER TABLE dbo.user_skill_scores DROP CONSTRAINT FK_user_skill_scores_handle;');
+
+    EXEC(N'
+    ALTER TABLE dbo.user_skill_scores WITH CHECK
+    ADD CONSTRAINT FK_user_skill_scores_handle
+    FOREIGN KEY (handle_id) REFERENCES dbo.programming_handles(handle_id)
+    ON DELETE CASCADE;
+    ');
+END
+GO
+
+IF OBJECT_ID(N'dbo.analysis_jobs', N'U') IS NOT NULL
+   AND OBJECT_ID(N'dbo.submissions', N'U') IS NOT NULL
+   AND OBJECT_ID(N'dbo.source_codes', N'U') IS NOT NULL
+BEGIN
+    IF OBJECT_ID(N'dbo.FK_analysis_jobs_source', N'F') IS NOT NULL
+        EXEC(N'ALTER TABLE dbo.analysis_jobs DROP CONSTRAINT FK_analysis_jobs_source;');
+
+    IF OBJECT_ID(N'dbo.FK_analysis_jobs_submission', N'F') IS NOT NULL
+        EXEC(N'ALTER TABLE dbo.analysis_jobs DROP CONSTRAINT FK_analysis_jobs_submission;');
+
+    EXEC(N'
+    ALTER TABLE dbo.analysis_jobs WITH CHECK
+    ADD CONSTRAINT FK_analysis_jobs_source
+    FOREIGN KEY (source_code_id) REFERENCES dbo.source_codes(source_code_id);
+    ');
+
+    EXEC(N'
+    ALTER TABLE dbo.analysis_jobs WITH CHECK
+    ADD CONSTRAINT FK_analysis_jobs_submission
+    FOREIGN KEY (submission_id) REFERENCES dbo.submissions(submission_id)
+    ON DELETE CASCADE;
+    ');
+END
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_programming_handles_platform' AND object_id = OBJECT_ID(N'dbo.programming_handles'))
     CREATE INDEX IX_programming_handles_platform ON dbo.programming_handles(platform_id);
 GO
@@ -329,6 +435,14 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_ai_analysis_results_s
     CREATE INDEX IX_ai_analysis_results_submission_created ON dbo.ai_analysis_results(submission_id, created_at DESC, analysis_id DESC);
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_analysis_jobs_status_retry' AND object_id = OBJECT_ID(N'dbo.analysis_jobs'))
+    CREATE INDEX IX_analysis_jobs_status_retry ON dbo.analysis_jobs(status, next_retry_at, updated_at DESC);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_analysis_jobs_submission' AND object_id = OBJECT_ID(N'dbo.analysis_jobs'))
+    CREATE INDEX IX_analysis_jobs_submission ON dbo.analysis_jobs(submission_id, updated_at DESC);
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_user_skill_scores_handle_id' AND object_id = OBJECT_ID(N'dbo.user_skill_scores'))
     CREATE INDEX IX_user_skill_scores_handle_id ON dbo.user_skill_scores(handle_id);
 GO
@@ -339,6 +453,56 @@ GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_crawl_logs_started_at' AND object_id = OBJECT_ID(N'dbo.crawl_logs'))
     CREATE INDEX IX_crawl_logs_started_at ON dbo.crawl_logs(started_at DESC);
+GO
+
+IF OBJECT_ID(N'dbo.analysis_jobs', N'U') IS NOT NULL
+   AND OBJECT_ID(N'dbo.source_codes', N'U') IS NOT NULL
+   AND OBJECT_ID(N'dbo.submissions', N'U') IS NOT NULL
+BEGIN
+    INSERT INTO dbo.analysis_jobs (
+        source_code_id,
+        submission_id,
+        status,
+        last_analysis_id,
+        last_error,
+        finished_at,
+        created_at,
+        updated_at
+    )
+    SELECT
+        sc.source_code_id,
+        sc.submission_id,
+        CASE
+            WHEN latest.analysis_id IS NOT NULL THEN 'SUCCEEDED'
+            WHEN s.source_crawl_status = 'FAILED' THEN 'FAILED'
+            WHEN s.source_crawl_status = 'SKIPPED' THEN 'SKIPPED'
+            WHEN sc.code_content IS NOT NULL AND LTRIM(RTRIM(sc.code_content)) <> N'' THEN 'PENDING'
+            ELSE 'SKIPPED'
+        END,
+        latest.analysis_id,
+        CASE
+            WHEN latest.analysis_id IS NOT NULL THEN NULL
+            WHEN s.source_crawl_error IS NOT NULL THEN s.source_crawl_error
+            WHEN sc.code_content IS NULL OR LTRIM(RTRIM(sc.code_content)) = N'' THEN N'No source code content is available for analysis.'
+            ELSE NULL
+        END,
+        CASE WHEN latest.analysis_id IS NOT NULL THEN latest.created_at ELSE NULL END,
+        SYSUTCDATETIME(),
+        SYSUTCDATETIME()
+    FROM dbo.source_codes sc
+    JOIN dbo.submissions s ON s.submission_id = sc.submission_id
+    OUTER APPLY (
+        SELECT TOP (1) ar.analysis_id, ar.created_at
+        FROM dbo.ai_analysis_results ar
+        WHERE ar.submission_id = sc.submission_id
+        ORDER BY ar.created_at DESC, ar.analysis_id DESC
+    ) latest
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM dbo.analysis_jobs aj
+        WHERE aj.source_code_id = sc.source_code_id
+    );
+END
 GO
 
 -- ============================================================

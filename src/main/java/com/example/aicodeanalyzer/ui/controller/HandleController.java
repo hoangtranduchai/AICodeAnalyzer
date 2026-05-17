@@ -5,6 +5,7 @@ import com.example.aicodeanalyzer.crawler.CrawlRequest;
 import com.example.aicodeanalyzer.crawler.CrawlResult;
 import com.example.aicodeanalyzer.model.HandleAccount;
 import com.example.aicodeanalyzer.model.Platform;
+import com.example.aicodeanalyzer.repository.HandleAccountRepository.HandlePipelineStats;
 import com.example.aicodeanalyzer.service.CrawlService;
 import com.example.aicodeanalyzer.service.HandleAccountService;
 import javafx.beans.property.SimpleStringProperty;
@@ -26,10 +27,12 @@ import javafx.scene.control.TableView;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
+import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
-import javafx.scene.layout.TilePane;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 
 import java.time.format.DateTimeFormatter;
@@ -38,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 /**
  * Controls screens for adding, editing, validating, and deactivating handles.
@@ -50,9 +54,13 @@ public class HandleController {
     private final CrawlService crawlService;
     private final BiConsumer<String, Boolean> notifier;
     private final I18n i18n;
+    private final Consumer<String> workflowLogger;
+    private final BiConsumer<String, String> openSourceAction;
+    private final BiConsumer<String, String> openReportAction;
     private final ObservableList<HandleAccount> handles = FXCollections.observableArrayList();
     private final ObservableList<PlatformOption> platforms = FXCollections.observableArrayList();
     private final Map<Long, PlatformOption> platformById = new HashMap<>();
+    private final Map<Long, HandlePipelineStats> pipelineStatsByHandleId = new HashMap<>();
 
     private ComboBox<PlatformOption> platformComboBox;
     private TextField handleField;
@@ -77,10 +85,35 @@ public class HandleController {
             BiConsumer<String, Boolean> notifier,
             I18n i18n
     ) {
+        this(handleAccountService, crawlService, notifier, i18n, message -> { });
+    }
+
+    public HandleController(
+            HandleAccountService handleAccountService,
+            CrawlService crawlService,
+            BiConsumer<String, Boolean> notifier,
+            I18n i18n,
+            Consumer<String> workflowLogger
+    ) {
+        this(handleAccountService, crawlService, notifier, i18n, workflowLogger, (platform, handle) -> { }, (platform, handle) -> { });
+    }
+
+    public HandleController(
+            HandleAccountService handleAccountService,
+            CrawlService crawlService,
+            BiConsumer<String, Boolean> notifier,
+            I18n i18n,
+            Consumer<String> workflowLogger,
+            BiConsumer<String, String> openSourceAction,
+            BiConsumer<String, String> openReportAction
+    ) {
         this.handleAccountService = handleAccountService;
         this.crawlService = crawlService;
         this.notifier = notifier;
         this.i18n = i18n;
+        this.workflowLogger = workflowLogger == null ? message -> { } : workflowLogger;
+        this.openSourceAction = openSourceAction == null ? (platform, handle) -> { } : openSourceAction;
+        this.openReportAction = openReportAction == null ? (platform, handle) -> { } : openReportAction;
     }
 
     public Node createView() {
@@ -98,7 +131,7 @@ public class HandleController {
         VBox tableCard = card(t("handle.table.card"), tableView);
         tableView.setPrefHeight(390);
 
-        TilePane content = responsiveSplit(formCard, tableCard);
+        GridPane content = responsiveSplit(formCard, tableCard);
 
         VBox layout = new VBox(
                 sectionNote(t("handle.note.title"), t("handle.note.detail")),
@@ -178,19 +211,20 @@ public class HandleController {
 
     private TableView<HandleAccount> buildTable() {
         TableView<HandleAccount> table = new TableView<>();
-        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
         table.getStyleClass().add("full-text-table");
         table.setPlaceholder(emptyPlaceholder(t("handle.placeholder.title"), t("handle.placeholder.detail")));
 
         table.getColumns().setAll(List.of(
-                column(t("table.platform"), handle -> platformName(handle.getPlatformId()), 150),
+                column(t("table.platform"), handle -> platformName(handle.getPlatformId()), 110),
                 column(t("table.handle"), HandleAccount::getHandle, 190),
-                column(t("table.notes"), handle -> valueOrEmpty(handle.getNotes()), 380),
-                column(t("table.permission"), handle -> valueOrEmpty(handle.getConsentStatus()), 150),
                 column(t("table.lastCrawl"), handle -> handle.getLastCrawledAt() == null
                         ? "-"
-                        : DATE_TIME_FORMATTER.format(handle.getLastCrawledAt()), 170),
-                column(t("table.status"), handle -> handle.isActive() ? t("table.tracked") : t("table.paused"), 130),
+                        : DATE_TIME_FORMATTER.format(handle.getLastCrawledAt()), 135),
+                column(t("table.newSubmissions"), handle -> String.valueOf(pipelineStat(handle).lastNewSubmissions()), 72),
+                column(t("table.pendingAi"), handle -> String.valueOf(pipelineStat(handle).pendingAi()), 92),
+                column(t("table.sourceIssues"), handle -> String.valueOf(pipelineStat(handle).sourceIssues()), 82),
+                column(t("table.status"), this::handleStatusText, 160),
                 actionColumn()
         ));
 
@@ -198,15 +232,39 @@ public class HandleController {
     }
 
     private void refresh(boolean showSuccessMessage) {
-        try {
-            loadPlatforms();
-            handles.setAll(handleAccountService.findAllHandles());
-            if (showSuccessMessage) {
-                notify(t("handle.notify.refreshed"), true);
+        javafx.concurrent.Task<Void> task = new javafx.concurrent.Task<>() {
+            private List<Platform> loadedPlatforms;
+            private List<HandlePipelineStats> loadedStats;
+            private List<HandleAccount> loadedHandles;
+
+            @Override
+            protected Void call() {
+                loadedPlatforms = handleAccountService.findPlatforms();
+                loadedStats = handleAccountService.findPipelineStats();
+                loadedHandles = handleAccountService.findAllHandles();
+                return null;
             }
-        } catch (RuntimeException ex) {
-            notify(t("handle.error.load", ex.getMessage()), false);
-        }
+
+            @Override
+            protected void succeeded() {
+                applyLoadedPlatforms(loadedPlatforms);
+                applyLoadedPipelineStats(loadedStats);
+                handles.setAll(loadedHandles);
+                if (showSuccessMessage) {
+                    HandleController.this.notify(t("handle.notify.refreshed"), true);
+                }
+            }
+
+            @Override
+            protected void failed() {
+                Throwable ex = getException();
+                String message = ex == null ? "Unknown error" : ex.getMessage();
+                HandleController.this.notify(t("handle.error.load", message), false);
+            }
+        };
+        Thread thread = new Thread(task, "handle-refresh");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     private void addHandle() {
@@ -289,17 +347,21 @@ public class HandleController {
         button.setDisable(true);
         String originalText = button.getText();
         button.setText(t("handle.crawl.preparing"));
+        String platformName = platformName(selected.getPlatformId());
+        workflowLogger.accept(t("handle.console.singleQueued", platformName, selected.getHandle()));
 
         Task<CrawlResult> task = new Task<>() {
             @Override
             protected CrawlResult call() {
                 if (!crawlService.isVisibleBotBrowserReady()) {
+                    workflowLogger.accept(t("handle.console.openingChrome", platformName, selected.getHandle()));
                     updateMessage(t("handle.crawl.openingChrome"));
                     boolean ready = crawlService.ensureVisibleBotBrowserReady(java.time.Duration.ofSeconds(45));
                     if (!ready) {
                         throw new IllegalStateException(t("handle.error.chromeOpenFailed"));
                     }
                 }
+                workflowLogger.accept(t("handle.console.running", platformName, selected.getHandle()));
                 updateMessage(t("handle.crawl.running"));
                 return crawlService.crawlHandleResult(
                         selected.getHandleId(),
@@ -318,6 +380,15 @@ public class HandleController {
             button.setText(originalText);
             CrawlResult result = task.getValue();
             refresh(false);
+            workflowLogger.accept(t(
+                    "handle.console.finished",
+                    result.platformCode(),
+                    result.handle(),
+                    result.submissions().size(),
+                    result.newCount(),
+                    result.updatedCount(),
+                    result.failedCount()
+            ));
             notify(t(
                     "handle.notify.crawled",
                     result.handle(),
@@ -331,6 +402,7 @@ public class HandleController {
             button.setText(originalText);
             Throwable exception = task.getException();
             String message = exception == null ? "Unknown error" : exception.getMessage();
+            workflowLogger.accept(t("handle.console.failed", platformName, selected.getHandle(), message));
             notify(t("handle.error.crawl", message), false);
         });
         Thread thread = new Thread(task, "crawl-single-handle-" + selected.getHandleId());
@@ -359,6 +431,10 @@ public class HandleController {
 
     private void loadPlatforms() {
         List<Platform> loadedPlatforms = handleAccountService.findPlatforms();
+        applyLoadedPlatforms(loadedPlatforms);
+    }
+
+    private void applyLoadedPlatforms(List<Platform> loadedPlatforms) {
         platforms.clear();
         platformById.clear();
 
@@ -373,6 +449,13 @@ public class HandleController {
 
         if (!platforms.isEmpty() && platformComboBox.getSelectionModel().isEmpty()) {
             platformComboBox.getSelectionModel().selectFirst();
+        }
+    }
+
+    private void applyLoadedPipelineStats(List<HandlePipelineStats> stats) {
+        pipelineStatsByHandleId.clear();
+        for (HandlePipelineStats stat : stats) {
+            pipelineStatsByHandleId.put(stat.handleId(), stat);
         }
     }
 
@@ -411,16 +494,39 @@ public class HandleController {
         return card;
     }
 
-    private TilePane responsiveSplit(Node... nodes) {
-        TilePane tilePane = new TilePane();
-        tilePane.setHgap(16);
-        tilePane.setVgap(16);
-        tilePane.setPrefColumns(2);
-        tilePane.setPrefTileWidth(520);
-        tilePane.setMaxWidth(Double.MAX_VALUE);
-        tilePane.getStyleClass().add("responsive-split");
-        tilePane.getChildren().addAll(nodes);
-        return tilePane;
+    private GridPane responsiveSplit(Node... nodes) {
+        GridPane grid = new GridPane();
+        grid.setHgap(16);
+        grid.setVgap(16);
+        grid.setMaxWidth(Double.MAX_VALUE);
+        grid.getStyleClass().add("responsive-split");
+        java.util.List<Node> nodeList = java.util.List.of(nodes);
+        Runnable updater = () -> {
+            double width = grid.getWidth() <= 0 ? 1200 : grid.getWidth();
+            int columns = width >= 760 ? 2 : 1;
+            grid.getChildren().clear();
+            grid.getColumnConstraints().clear();
+            for (int column = 0; column < columns; column++) {
+                ColumnConstraints constraints = new ColumnConstraints();
+                constraints.setPercentWidth(100.0 / columns);
+                constraints.setHgrow(Priority.ALWAYS);
+                constraints.setFillWidth(true);
+                grid.getColumnConstraints().add(constraints);
+            }
+            for (int index = 0; index < nodeList.size(); index++) {
+                Node node = nodeList.get(index);
+                if (node instanceof Region region) {
+                    region.setMinWidth(0);
+                    region.setMaxWidth(Double.MAX_VALUE);
+                }
+                GridPane.setHgrow(node, Priority.ALWAYS);
+                GridPane.setFillWidth(node, true);
+                grid.add(node, index % columns, index / columns);
+            }
+        };
+        grid.widthProperty().addListener((observable, oldValue, newValue) -> updater.run());
+        javafx.application.Platform.runLater(updater);
+        return grid;
     }
 
     private FlowPane actionFlow(Node... nodes) {
@@ -435,10 +541,13 @@ public class HandleController {
     private VBox sectionNote(String title, String detail) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("state-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label detailLabel = new Label(detail);
         detailLabel.getStyleClass().add("state-detail");
         detailLabel.setWrapText(true);
+        detailLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(titleLabel, detailLabel);
         box.setSpacing(4);
@@ -449,10 +558,13 @@ public class HandleController {
     private VBox emptyPlaceholder(String title, String detail) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("state-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label detailLabel = new Label(detail);
         detailLabel.getStyleClass().add("state-detail");
         detailLabel.setWrapText(true);
+        detailLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(titleLabel, detailLabel);
         box.setAlignment(Pos.CENTER);
@@ -464,6 +576,10 @@ public class HandleController {
     private Button actionButton(String text, boolean primary, Runnable action) {
         Button button = new Button(text);
         button.getStyleClass().add(primary ? "primary-button" : "secondary-button");
+        button.setWrapText(true);
+        button.setMinWidth(0);
+        button.setTooltip(new Tooltip(text));
+        button.setAccessibleText(text);
         button.setOnAction(event -> action.run());
         return button;
     }
@@ -505,33 +621,99 @@ public class HandleController {
 
     private TableColumn<HandleAccount, Void> actionColumn() {
         TableColumn<HandleAccount, Void> column = new TableColumn<>(t("table.actions"));
-        column.setPrefWidth(160);
+        column.setPrefWidth(270);
         column.setCellFactory(ignored -> new TableCell<>() {
             private final Button crawlButton = new Button(t("handle.action.crawl"));
+            private final Button sourceButton = new Button(t("handle.action.source"));
+            private final Button reportButton = new Button(t("handle.action.report"));
+            private final HBox actions = new HBox(crawlButton, sourceButton, reportButton);
 
             {
+                actions.setSpacing(8);
+                actions.setAlignment(Pos.CENTER);
+                actions.setMaxWidth(Double.MAX_VALUE);
                 crawlButton.getStyleClass().add("secondary-button");
+                crawlButton.setWrapText(true);
+                crawlButton.getStyleClass().add("table-action-button");
                 crawlButton.setOnAction(event -> {
                     HandleAccount row = getTableView().getItems().get(getIndex());
                     crawlSelectedHandle(row, crawlButton);
                 });
                 crawlButton.setTooltip(new Tooltip(t("handle.action.crawl.tooltip")));
-                crawlButton.setMaxWidth(Double.MAX_VALUE);
+                sourceButton.getStyleClass().add("secondary-button");
+                sourceButton.setWrapText(true);
+                sourceButton.getStyleClass().add("table-action-button");
+                sourceButton.setTooltip(new Tooltip(t("handle.action.source.tooltip")));
+                sourceButton.setOnAction(event -> openSourceForRow(getTableView().getItems().get(getIndex())));
+                reportButton.getStyleClass().add("secondary-button");
+                reportButton.setWrapText(true);
+                reportButton.getStyleClass().add("table-action-button");
+                reportButton.setTooltip(new Tooltip(t("handle.action.report.tooltip")));
+                reportButton.setOnAction(event -> openReportForRow(getTableView().getItems().get(getIndex())));
             }
 
             @Override
             protected void updateItem(Void item, boolean empty) {
                 super.updateItem(item, empty);
                 setText(null);
-                setGraphic(empty ? null : crawlButton);
+                setGraphic(empty ? null : actions);
             }
         });
         return column;
     }
 
+    private void openSourceForRow(HandleAccount row) {
+        if (row == null) {
+            return;
+        }
+        openSourceAction.accept(platformCode(row.getPlatformId()), row.getHandle());
+    }
+
+    private void openReportForRow(HandleAccount row) {
+        if (row == null) {
+            return;
+        }
+        openReportAction.accept(platformCode(row.getPlatformId()), row.getHandle());
+    }
+
     private String platformName(Long platformId) {
         PlatformOption platform = platformById.get(platformId);
         return platform == null ? t("table.unknown") : platform.name();
+    }
+
+    private String platformCode(Long platformId) {
+        PlatformOption platform = platformById.get(platformId);
+        return platform == null ? "" : platform.code();
+    }
+
+    private String handleStatusText(HandleAccount handle) {
+        if (handle == null || !handle.isActive()) {
+            return t("table.paused");
+        }
+        String lastStatus = valueOrEmpty(pipelineStat(handle).lastStatus());
+        return lastStatus.isBlank() || "-".equals(lastStatus) ? t("table.tracked") : lastStatus;
+    }
+
+    private HandlePipelineStats pipelineStat(HandleAccount handle) {
+        if (handle == null || handle.getHandleId() == null) {
+            return emptyPipelineStats();
+        }
+        return pipelineStatsByHandleId.getOrDefault(handle.getHandleId(), emptyPipelineStats());
+    }
+
+    private HandlePipelineStats emptyPipelineStats() {
+        return new HandlePipelineStats(0, 0, 0, 0, 0, "-");
+    }
+
+    private void loadPipelineStats() {
+        pipelineStatsByHandleId.clear();
+        try {
+            for (HandlePipelineStats stats : handleAccountService.findPipelineStats()) {
+                pipelineStatsByHandleId.put(stats.handleId(), stats);
+            }
+        } catch (RuntimeException ex) {
+            workflowLogger.accept("Could not load handle pipeline stats. Reason: " + ex.getMessage());
+        }
     }
 
     private String valueOrEmpty(String value) {

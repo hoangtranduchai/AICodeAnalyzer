@@ -277,11 +277,14 @@ class OpenAIAnalyzerServiceTest {
                 "CODEFORCES",
                 "Codeforces",
                 "tourist",
+                "123456",
                 "1703A",
                 "YES or YES?",
                 "GNU C++17",
                 "OK",
                 LocalDateTime.of(2026, 5, 13, 10, 30),
+                "CRAWLED",
+                null,
                 """
                         #include <bits/stdc++.h>
                         using namespace std;
@@ -300,6 +303,7 @@ class OpenAIAnalyzerServiceTest {
                 12,
                 252,
                 LocalDateTime.of(2026, 5, 13, 10, 31),
+                null,
                 null
         );
     }

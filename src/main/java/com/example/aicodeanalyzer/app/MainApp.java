@@ -10,12 +10,14 @@ import com.example.aicodeanalyzer.model.SkillScore;
 import com.example.aicodeanalyzer.i18n.I18n;
 import com.example.aicodeanalyzer.report.ReportExportResult;
 import com.example.aicodeanalyzer.report.ReportRequest;
+import com.example.aicodeanalyzer.repository.OperationsRepository;
 import com.example.aicodeanalyzer.scheduler.SchedulerManager;
 import com.example.aicodeanalyzer.ui.controller.DashboardController;
 import com.example.aicodeanalyzer.ui.controller.HandleController;
 import com.example.aicodeanalyzer.ui.controller.MainShellController;
 import com.example.aicodeanalyzer.ui.controller.SchedulerSettingsController;
 import com.example.aicodeanalyzer.ui.controller.SourceCodeDetailController;
+import com.example.aicodeanalyzer.ui.logging.UiLogBus;
 import com.example.aicodeanalyzer.util.SecretUtils;
 import javafx.animation.FadeTransition;
 import javafx.animation.ParallelTransition;
@@ -52,16 +54,18 @@ import javafx.fxml.FXMLLoader;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
-import javafx.scene.layout.TilePane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 import javafx.util.Duration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.awt.Desktop;
 import java.io.IOException;
@@ -69,6 +73,7 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -83,6 +88,7 @@ import java.util.function.Function;
  * Điểm vào JavaFX. Dựng khung giao diện desktop chính cho dự án.
  */
 public class MainApp extends Application {
+    private static final Logger LOGGER = LoggerFactory.getLogger(MainApp.class);
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ISO_LOCAL_DATE;
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final DateTimeFormatter LOG_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -93,6 +99,7 @@ public class MainApp extends Application {
     private final ApplicationContext applicationContext = new ApplicationContext();
     private final List<Button> navigationButtons = new ArrayList<>();
     private final Map<String, ViewFactory> viewFactoriesByScreen = new LinkedHashMap<>();
+    private final Map<String, ScrollPane> screenCacheById = new LinkedHashMap<>();
     private final SchedulerManager schedulerManager = applicationContext.schedulerManager();
 
     private BorderPane root;
@@ -104,6 +111,10 @@ public class MainApp extends Application {
     private Button checkChromeButton;
     private TextArea workflowConsoleArea;
     private HandleController workspaceHandleController;
+    private DashboardController workspaceDashboardController;
+    private SourceCodeDetailController aiReviewController;
+    private Runnable operationsRefreshAll = () -> { };
+    private String focusedReportHandle;
     private Label brandLabel;
     private Label brandSubtitleLabel;
     private Label footerDbLabel;
@@ -118,6 +129,7 @@ public class MainApp extends Application {
     private Label loadingLabel;
     private PauseTransition notificationPause;
     private PauseTransition crawlButtonPause;
+    private PauseTransition realtimeRefreshPause;
     private final List<String> workflowConsoleLines = new ArrayList<>();
     private Button themeToggleButton;
     private Button languageToggleButton;
@@ -131,42 +143,69 @@ public class MainApp extends Application {
     private String chromeStatusStyleClass = "info-pill";
     private String chromeStatusTooltip = "";
     private boolean shutdownRequested;
+    private long lastRealtimeRefreshMillis;
 
     @Override
     public void start(Stage stage) {
-        schedulerManager.start();
-        schedulerManager.addWorkflowListener(this::appendWorkflowLog);
-        applySavedSchedulerConfig();
+        try {
+            schedulerManager.start();
+            schedulerManager.addWorkflowListener(this::appendWorkflowLog);
+            UiLogBus.addListener(this::appendWorkflowLog);
 
-        MainShellController shellController = loadMainShell();
-        root = shellController.root();
-        root.getStyleClass().addAll("app-root", "dark-theme");
+            MainShellController shellController = loadMainShell();
+            root = shellController.root();
+            root.getStyleClass().addAll("app-root", "dark-theme");
 
-        contentStack = new StackPane();
-        contentStack.getStyleClass().add("content-stack");
-        loadingOverlay = buildLoadingOverlay();
+            contentStack = new StackPane();
+            contentStack.getStyleClass().add("content-stack");
+            loadingOverlay = buildLoadingOverlay();
 
-        sidebar = buildSidebar();
-        shellController.setSidebar(wrapSidebar(sidebar));
-        shellController.setContent(contentStack);
+            sidebar = buildSidebar();
+            shellController.setSidebar(wrapSidebar(sidebar));
+            shellController.setContent(contentStack);
 
-        showScreen("dashboard", buildWorkspaceView(), false);
+            // Show a loading screen immediately instead of blocking on DB calls
+            loadingOverlay.setVisible(true);
+            contentStack.getChildren().add(loadingOverlay);
 
-        Scene scene = new Scene(root, 1280, 780);
-        var stylesheet = MainApp.class.getResource("/css/app.css");
-        if (stylesheet != null) {
-            scene.getStylesheets().add(stylesheet.toExternalForm());
+            Scene scene = new Scene(root, 1280, 780);
+            var stylesheet = MainApp.class.getResource("/css/app.css");
+            if (stylesheet != null) {
+                scene.getStylesheets().add(stylesheet.toExternalForm());
+            }
+
+            stage.setTitle(t("app.title"));
+            stage.setMinWidth(520);
+            stage.setMinHeight(560);
+            stage.setScene(scene);
+            stage.setOnCloseRequest(event -> shutdownAndExit());
+            applyResponsiveSidebar(stage.getWidth());
+            stage.widthProperty().addListener((observable, oldValue, newValue) -> applyResponsiveSidebar(newValue.doubleValue()));
+            stage.setMaximized(true);
+            stage.show();
+
+            // Perform heavy initialization asynchronously after the window is visible
+            Thread initThread = new Thread(() -> {
+                try {
+                    applySavedSchedulerConfig();
+                } catch (RuntimeException ignored) {
+                    // Settings may not be configured yet
+                }
+                javafx.application.Platform.runLater(() -> {
+                    try {
+                        showScreen("dashboard", buildWorkspaceView(), false);
+                    } catch (RuntimeException ex) {
+                        showScreen("dashboard", errorCard(t("error.dashboard"), ex), false);
+                    }
+                    loadingOverlay.setVisible(false);
+                });
+            }, "app-init");
+            initThread.setDaemon(true);
+            initThread.start();
+        } catch (Throwable ex) {
+            LOGGER.error("MainApp.start() failed.", ex);
+            throw ex instanceof RuntimeException re ? re : new RuntimeException(ex);
         }
-
-        stage.setTitle(t("app.title"));
-        stage.setMinWidth(520);
-        stage.setMinHeight(560);
-        stage.setScene(scene);
-        stage.setOnCloseRequest(event -> shutdownAndExit());
-        applyResponsiveSidebar(stage.getWidth());
-        stage.widthProperty().addListener((observable, oldValue, newValue) -> applyResponsiveSidebar(newValue.doubleValue()));
-        stage.setMaximized(true);
-        stage.show();
     }
 
     private MainShellController loadMainShell() {
@@ -208,24 +247,7 @@ public class MainApp extends Application {
                 return;
             }
             appendWorkflowLog(t("workspace.console.chromeReady"));
-            try {
-                setCrawlButtonsBusy(t("sidebar.crawlQueueing"));
-                appendWorkflowLog(t("workspace.console.queueing"));
-                boolean queued = schedulerManager.triggerCrawlNow();
-                applyChromeStatus(true);
-                if (queued) {
-                    showNotification(t("notification.forceCrawlQueued"), true);
-                    appendWorkflowLog(t("workspace.console.queued"));
-                } else {
-                    showNotification(t("notification.workflowAlreadyRunning"), false);
-                    appendWorkflowLog(t("workspace.console.alreadyRunning"));
-                }
-                scheduleCrawlButtonRestore();
-            } catch (RuntimeException ex) {
-                restoreCrawlButtonsState();
-                appendWorkflowLog(t("workspace.console.queueFailed", SecretUtils.sanitizeMessage(ex.getMessage())));
-                showNotification(t("sidebar.crawlError", ex.getMessage()), false);
-            }
+            queueManualWorkflowAfterChromeReady();
         });
         task.setOnFailed(event -> {
             restoreCrawlButtonsState();
@@ -238,6 +260,27 @@ public class MainApp extends Application {
         Thread thread = new Thread(task, "crawl-preflight-chrome-check");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    private void queueManualWorkflowAfterChromeReady() {
+        try {
+            setCrawlButtonsBusy(t("sidebar.crawlQueueing"));
+            appendWorkflowLog(t("workspace.console.queueing"));
+            boolean queued = schedulerManager.triggerCrawlNow();
+            applyChromeStatus(true);
+            if (queued) {
+                showNotification(t("notification.forceCrawlQueued"), true);
+                appendWorkflowLog(t("workspace.console.queued"));
+            } else {
+                showNotification(t("notification.workflowAlreadyRunning"), false);
+                appendWorkflowLog(t("workspace.console.alreadyRunning"));
+            }
+            scheduleCrawlButtonRestore();
+        } catch (RuntimeException ex) {
+            restoreCrawlButtonsState();
+            appendWorkflowLog(t("workspace.console.queueFailed", SecretUtils.sanitizeMessage(ex.getMessage())));
+            showNotification(t("sidebar.crawlError", ex.getMessage()), false);
+        }
     }
 
     private HBox buildModeActions() {
@@ -282,6 +325,7 @@ public class MainApp extends Application {
         }
         shutdownRequested = true;
         schedulerManager.removeWorkflowListener(this::appendWorkflowLog);
+        UiLogBus.removeListener(this::appendWorkflowLog);
         schedulerManager.shutdown();
     }
 
@@ -306,6 +350,7 @@ public class MainApp extends Application {
         nav.getChildren().addAll(
                 navButton("dashboard", "nav.dashboard", () -> buildWorkspaceView()),
                 navButton("analysis", "nav.analysis", () -> buildAnalysisWorkspaceView()),
+                navButton("operations", "nav.operations", () -> buildOperationsCenterView()),
                 navButton("evaluation", "nav.evaluation", () -> buildEvaluationReportView()),
                 navButton("settings", "nav.settings", () -> buildSettingsView())
         );
@@ -634,6 +679,7 @@ public class MainApp extends Application {
 
     private void toggleLanguage() {
         i18n.toggle();
+        screenCacheById.clear();
         updateStaticTexts();
         ViewFactory factory = viewFactoriesByScreen.get(currentScreenId);
         if (factory != null) {
@@ -716,13 +762,28 @@ public class MainApp extends Application {
         button.setWrapText(true);
         button.setTextOverrun(OverrunStyle.CLIP);
         button.getStyleClass().add("nav-button");
-        button.setOnAction(event -> navigateTo(screenId, factory.create()));
+        button.setOnAction(event -> {
+            if ("evaluation".equals(screenId)) {
+                focusedReportHandle = null;
+                screenCacheById.remove("evaluation");
+            }
+            navigateTo(screenId);
+        });
         navigationButtons.add(button);
         return button;
     }
 
-    private void navigateTo(String screenId, Node view) {
-        showScreen(screenId, view, true);
+    private void navigateTo(String screenId) {
+        ViewFactory factory = viewFactoriesByScreen.get(screenId);
+        if (factory == null) {
+            return;
+        }
+        ScrollPane cachedScreen = screenCacheById.get(screenId);
+        if (cachedScreen != null) {
+            showCachedScreen(screenId, cachedScreen, true);
+        } else {
+            showScreen(screenId, factory.create(), true);
+        }
         updateActiveNavigation();
     }
 
@@ -736,9 +797,13 @@ public class MainApp extends Application {
     }
 
     private void showScreen(String screenId, Node view, boolean showTransition) {
-        currentScreenId = screenId;
-
         ScrollPane wrappedView = wrapView(view);
+        screenCacheById.put(screenId, wrappedView);
+        showCachedScreen(screenId, wrappedView, showTransition);
+    }
+
+    private void showCachedScreen(String screenId, ScrollPane wrappedView, boolean showTransition) {
+        currentScreenId = screenId;
         contentStack.getChildren().setAll(wrappedView, buildNotificationBar(), loadingOverlay);
         loadingOverlay.setVisible(false);
 
@@ -761,12 +826,16 @@ public class MainApp extends Application {
         notificationText = new Label();
         notificationText.getStyleClass().add("notification-text");
         notificationText.setWrapText(true);
-        notificationText.setMaxWidth(340);
-        notificationText.setTextOverrun(OverrunStyle.ELLIPSIS);
+        notificationText.setMinWidth(0);
+        notificationText.setMaxWidth(360);
+        notificationText.setMaxHeight(58);
+        notificationText.setMinHeight(Region.USE_PREF_SIZE);
+        notificationText.setTextOverrun(OverrunStyle.WORD_ELLIPSIS);
 
         closeNotificationButton = new Button("x");
         closeNotificationButton.getStyleClass().add("icon-button");
         closeNotificationButton.setTooltip(new Tooltip(t("notification.close")));
+        closeNotificationButton.setAccessibleText(t("notification.close"));
         closeNotificationButton.setOnAction(event -> {
             notificationBar.setVisible(false);
             notificationBar.setManaged(false);
@@ -783,8 +852,9 @@ public class MainApp extends Application {
         notificationBar.setMaxWidth(440);
         notificationBar.setMinHeight(40);
         notificationBar.setPrefHeight(Region.USE_COMPUTED_SIZE);
-        notificationBar.setMaxHeight(84);
+        notificationBar.setMaxHeight(96);
         notificationBar.getStyleClass().add("notification-success");
+        notificationBar.setAccessibleText("Notification");
         notificationBar.setVisible(false);
         notificationBar.setManaged(false);
         StackPane.setAlignment(notificationBar, Pos.BOTTOM_RIGHT);
@@ -798,6 +868,7 @@ public class MainApp extends Application {
 
         loadingLabel = new Label(t("app.loading"));
         loadingLabel.getStyleClass().add("loading-label");
+        loadingLabel.setWrapText(true);
 
         VBox box = new VBox(indicator, loadingLabel);
         box.setAlignment(Pos.CENTER);
@@ -806,6 +877,7 @@ public class MainApp extends Application {
 
         StackPane overlay = new StackPane(box);
         overlay.getStyleClass().add("loading-overlay");
+        overlay.setAccessibleText(t("app.loading"));
         overlay.setVisible(false);
         return overlay;
     }
@@ -833,9 +905,15 @@ public class MainApp extends Application {
     }
 
     private void showNotification(String message, boolean success) {
+        if (notificationBar == null || notificationText == null) {
+            return;
+        }
         notificationBar.getStyleClass().removeAll("notification-success", "notification-error");
         notificationBar.getStyleClass().add(success ? "notification-success" : "notification-error");
-        notificationText.setText(SecretUtils.sanitizeMessage(message));
+        String sanitizedMessage = SecretUtils.sanitizeMessage(message);
+        notificationText.setText(compactNotificationMessage(sanitizedMessage));
+        notificationText.setTooltip(fastTooltip(sanitizedMessage));
+        notificationBar.setAccessibleText(sanitizedMessage);
         notificationBar.setVisible(true);
         notificationBar.setManaged(true);
 
@@ -850,6 +928,18 @@ public class MainApp extends Application {
         notificationPause.play();
     }
 
+    private String compactNotificationMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return "-";
+        }
+        String normalized = message.replace('\r', ' ').replace('\n', ' ').trim();
+        int maxLength = 180;
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, maxLength - 1).trim() + "...";
+    }
+
     private Node buildWorkspaceView() {
         try {
             DashboardController controller = new DashboardController(
@@ -857,11 +947,15 @@ public class MainApp extends Application {
                     (message, success) -> showNotification(message, success),
                     i18n
             );
+            workspaceDashboardController = controller;
             workspaceHandleController = new HandleController(
                     applicationContext.handleAccountService(),
                     applicationContext.crawlService(),
                     (message, success) -> showNotification(message, success),
-                    i18n
+                    i18n,
+                    this::appendWorkflowLog,
+                    this::openSourceForHandle,
+                    this::openReportForHandle
             );
             return screen(
                     sectionHeader(t("workspace.title"), t("workspace.subtitle")),
@@ -890,14 +984,18 @@ public class MainApp extends Application {
         workflowConsoleArea.setEditable(false);
         workflowConsoleArea.setWrapText(true);
         workflowConsoleArea.setPrefRowCount(12);
-        workflowConsoleArea.setMinHeight(240);
+        workflowConsoleArea.setMinHeight(360);
+        workflowConsoleArea.setPrefHeight(420);
         workflowConsoleArea.setMaxWidth(Double.MAX_VALUE);
+        workflowConsoleArea.setMaxHeight(Double.MAX_VALUE);
         workflowConsoleArea.getStyleClass().addAll("workflow-console", "command-field");
+        VBox.setVgrow(workflowConsoleArea, Priority.ALWAYS);
 
         if (workflowConsoleLines.isEmpty()) {
             appendWorkflowLog(t("workspace.console.ready"));
         } else {
-            workflowConsoleArea.setText(String.join(System.lineSeparator(), workflowConsoleLines));
+            workflowConsoleArea.setText(String.join(System.lineSeparator(), workflowConsoleLines)
+                    + System.lineSeparator());
             workflowConsoleArea.positionCaret(workflowConsoleArea.getText().length());
         }
 
@@ -905,7 +1003,9 @@ public class MainApp extends Application {
         clearButton.getStyleClass().add("secondary-button");
         clearButton.setOnAction(event -> {
             workflowConsoleLines.clear();
-            appendWorkflowLog(t("workspace.console.cleared"));
+            if (workflowConsoleArea != null) {
+                workflowConsoleArea.clear();
+            }
         });
 
         HBox header = new HBox(new VBox(title, detail), clearButton);
@@ -917,6 +1017,8 @@ public class MainApp extends Application {
         card.setSpacing(12);
         card.setPadding(new Insets(16));
         card.setMaxWidth(Double.MAX_VALUE);
+        card.setMinHeight(520);
+        card.setPrefHeight(560);
         card.getStyleClass().addAll("card", "workflow-console-card");
         return card;
     }
@@ -934,16 +1036,24 @@ public class MainApp extends Application {
                         + " | " + message;
             }
             workflowConsoleLines.add(line);
+            boolean trimmed = false;
             while (workflowConsoleLines.size() > 200) {
                 workflowConsoleLines.remove(0);
+                trimmed = true;
             }
             if (workflowConsoleArea != null) {
-                workflowConsoleArea.setText(String.join(System.lineSeparator(), workflowConsoleLines));
+                if (trimmed || workflowConsoleArea.getText().isBlank()) {
+                    workflowConsoleArea.setText(String.join(System.lineSeparator(), workflowConsoleLines)
+                            + System.lineSeparator());
+                } else {
+                    workflowConsoleArea.appendText(line + System.lineSeparator());
+                }
                 workflowConsoleArea.positionCaret(workflowConsoleArea.getText().length());
             }
             if (line.contains("Finished MANUAL workflow") || line.contains("Finished SCHEDULED workflow")) {
                 refreshWorkspaceHandleTable();
             }
+            requestRealtimeUiRefresh();
         };
         if (javafx.application.Platform.isFxApplicationThread()) {
             update.run();
@@ -963,9 +1073,75 @@ public class MainApp extends Application {
         }
     }
 
+    private void requestRealtimeUiRefresh() {
+        long now = System.currentTimeMillis();
+        if (now - lastRealtimeRefreshMillis > 1500) {
+            refreshRealtimeTargets();
+            lastRealtimeRefreshMillis = now;
+        }
+        if (realtimeRefreshPause != null) {
+            realtimeRefreshPause.stop();
+        }
+        realtimeRefreshPause = new PauseTransition(Duration.millis(800));
+        realtimeRefreshPause.setOnFinished(event -> {
+            refreshRealtimeTargets();
+            lastRealtimeRefreshMillis = System.currentTimeMillis();
+        });
+        realtimeRefreshPause.play();
+    }
+
+    private void refreshRealtimeTargets() {
+        if ("dashboard".equals(currentScreenId)) {
+            refreshWorkspaceHandleTable();
+            if (workspaceDashboardController != null) {
+                workspaceDashboardController.refreshDashboard();
+            }
+            return;
+        }
+        if ("analysis".equals(currentScreenId) && aiReviewController != null) {
+            aiReviewController.refreshSourceList();
+            return;
+        }
+        if ("operations".equals(currentScreenId)) {
+            operationsRefreshAll.run();
+        }
+    }
+
+    private void openSourceForHandle(String platformCode, String handle) {
+        if (!hasText(platformCode) || !hasText(handle)) {
+            showNotification("Cannot open source view because handle context is missing.", false);
+            return;
+        }
+        navigateTo("analysis");
+        if (aiReviewController != null) {
+            aiReviewController.showHandleSources(platformCode, handle);
+            showNotification("Showing source code for " + platformCode + "/" + handle + ".", true);
+        }
+    }
+
+    private void openAllSources() {
+        navigateTo("analysis");
+        if (aiReviewController != null) {
+            aiReviewController.showAllSources();
+            showNotification(t("source.notify.showAll"), true);
+        }
+    }
+
+    private void openReportForHandle(String platformCode, String handle) {
+        if (!hasText(platformCode) || !hasText(handle)) {
+            showNotification("Cannot open report because handle context is missing.", false);
+            return;
+        }
+        focusedReportHandle = platformCode + "/" + handle;
+        screenCacheById.remove("evaluation");
+        navigateTo("evaluation");
+        showNotification("Showing report context for " + focusedReportHandle + ".", true);
+    }
+
     private Node buildWorkspaceActionCard() {
         Label title = new Label(t("workspace.primaryAction.title"));
         title.getStyleClass().add("state-title");
+        title.setWrapText(true);
 
         Label detail = new Label(t("workspace.primaryAction.detail"));
         detail.getStyleClass().add("state-detail");
@@ -998,12 +1174,33 @@ public class MainApp extends Application {
         checkChromeButton.setTooltip(new Tooltip(t("footer.chromeMissing.tooltip")));
         checkChromeButton.setOnAction(event -> refreshChromeStatusAsync(true));
 
-        HBox primaryRow = new HBox(copy, workspaceCrawlButton);
-        primaryRow.setSpacing(16);
-        primaryRow.setAlignment(Pos.CENTER_LEFT);
+        Button viewSourceButton = new Button(t("action.viewSourceCode"));
+        viewSourceButton.getStyleClass().add("secondary-button");
+        viewSourceButton.setWrapText(true);
+        viewSourceButton.setTooltip(new Tooltip(t("workspace.openReview.tooltip")));
+        viewSourceButton.setOnAction(event -> openAllSources());
+
+        Button operationsButton = new Button(t("action.openOperations"));
+        operationsButton.getStyleClass().add("secondary-button");
+        operationsButton.setWrapText(true);
+        operationsButton.setTooltip(new Tooltip(t("workspace.openOperations.tooltip")));
+        operationsButton.setOnAction(event -> navigateTo("operations"));
+
+        HBox primaryActions = new HBox(workspaceCrawlButton, viewSourceButton, operationsButton);
+        primaryActions.getStyleClass().add("workspace-inline-actions");
+        primaryActions.setSpacing(10);
+        primaryActions.setAlignment(Pos.TOP_RIGHT);
+
+        HBox primarySection = new HBox(copy, primaryActions);
+        primarySection.setAlignment(Pos.TOP_LEFT);
+        primarySection.setSpacing(16);
+        primarySection.setMaxWidth(Double.MAX_VALUE);
+        primarySection.getStyleClass().add("workspace-action-row");
+        HBox.setHgrow(primaryActions, Priority.NEVER);
 
         Label botTitle = new Label(t("workspace.bot.title"));
         botTitle.getStyleClass().add("state-title");
+        botTitle.setWrapText(true);
 
         Label botDetail = new Label(t("workspace.bot.detail"));
         botDetail.getStyleClass().add("state-detail");
@@ -1015,14 +1212,18 @@ public class MainApp extends Application {
         HBox.setHgrow(botCopy, Priority.ALWAYS);
 
         HBox botActions = new HBox(workspaceChromeLabel, initializeBotButton, checkChromeButton);
-        botActions.setSpacing(8);
-        botActions.setAlignment(Pos.CENTER_LEFT);
+        botActions.getStyleClass().add("workspace-inline-actions");
+        botActions.setSpacing(10);
+        botActions.setAlignment(Pos.TOP_RIGHT);
 
-        HBox botRow = new HBox(botCopy, botActions);
-        botRow.setSpacing(16);
-        botRow.setAlignment(Pos.CENTER_LEFT);
+        HBox botSection = new HBox(botCopy, botActions);
+        botSection.setAlignment(Pos.TOP_LEFT);
+        botSection.setSpacing(16);
+        botSection.setMaxWidth(Double.MAX_VALUE);
+        botSection.getStyleClass().add("workspace-action-row");
+        HBox.setHgrow(botActions, Priority.NEVER);
 
-        VBox box = new VBox(primaryRow, new Separator(), botRow);
+        VBox box = new VBox(primarySection, new Separator(), botSection);
         box.setSpacing(14);
         box.setPadding(new Insets(16));
         box.setMaxWidth(Double.MAX_VALUE);
@@ -1106,10 +1307,14 @@ public class MainApp extends Application {
             applyChromeStatus(ready);
             appendWorkflowLog(t(ready ? "workspace.console.chromeReady" : "workspace.console.chromeOpened"));
             if (ready && requestedByCrawl) {
-                showNotification(t("notification.chromeReadyRunAgain"), true);
+                appendWorkflowLog(t("workspace.console.chromeReadyAutoQueue"));
+                queueManualWorkflowAfterChromeReady();
             } else if (ready) {
                 showNotification(t("notification.chromeReady"), true);
             } else {
+                if (requestedByCrawl) {
+                    appendWorkflowLog(t("workspace.console.loginThenRunAgain"));
+                }
                 showNotification(t("notification.chromeOpenedLogin"), false);
             }
         });
@@ -1143,10 +1348,11 @@ public class MainApp extends Application {
                     (message, success) -> showNotification(message, success),
                     i18n
             );
+            aiReviewController = controller;
 
             List<AiAnalysisResult> analyses = loadAnalyses();
-            ObservableList<AnalysisRow> rows = toAnalysisRows(analyses);
-            TilePane metrics = metricGrid(
+            ObservableList<AnalysisRow> rows = loadAnalysisRows();
+            GridPane metrics = metricGrid(
                     metricCard(t("analysis.metric.count"), String.valueOf(analyses.size()), t("analysis.metric.count.hint")),
                     metricCard(t("analysis.metric.quality"), averageScore(analyses, true), t("analysis.metric.quality.hint")),
                     metricCard(t("analysis.metric.risk"), averageScore(analyses, false), t("analysis.metric.risk.hint")),
@@ -1155,11 +1361,15 @@ public class MainApp extends Application {
 
             TableView<AnalysisRow> table = table(
                     rows,
-                    column(t("table.submission"), AnalysisRow::submission, 140),
-                    column(t("table.analyzer"), AnalysisRow::analyzer, 110),
-                    column(t("table.structures"), AnalysisRow::structures, 210),
-                    column(t("table.algorithms"), AnalysisRow::algorithms, 220),
-                    column(t("table.risk"), AnalysisRow::risk, 100),
+                    column(t("table.submission"), AnalysisRow::submission, 100),
+                    column(t("table.platform"), AnalysisRow::platform, 110),
+                    column(t("table.handle"), AnalysisRow::handle, 170),
+                    column("Remote ID", AnalysisRow::remoteId, 130),
+                    column(t("source.info.problem"), AnalysisRow::problem, 220),
+                    column(t("table.analyzer"), AnalysisRow::analyzer, 120),
+                    column(t("table.structures"), AnalysisRow::structures, 190),
+                    column(t("table.algorithms"), AnalysisRow::algorithms, 240),
+                    column(t("table.risk"), AnalysisRow::risk, 90),
                     column(t("table.quality"), AnalysisRow::quality, 90)
             );
             table.setPlaceholder(emptyPlaceholder(
@@ -1185,6 +1395,11 @@ public class MainApp extends Application {
 
     private Node buildEvaluationReportView() {
         ObservableList<SkillRow> rows = loadSkillRows();
+        if (hasText(focusedReportHandle)) {
+            rows = rows.stream()
+                    .filter(row -> focusedReportHandle.equalsIgnoreCase(row.handle()))
+                    .collect(FXCollections::observableArrayList, ObservableList::add, ObservableList::addAll);
+        }
         BarChart<String, Number> chart = skillChart(rows);
         TableView<SkillRow> table = table(
                 rows,
@@ -1218,7 +1433,11 @@ public class MainApp extends Application {
         addFormRow(filters, 5, t("evaluation.filter.format"), formatCombo);
         addFormRow(filters, 6, t("evaluation.filter.openFile"), openAfterExport);
 
-        Button previewButton = actionButton(t("action.preview"), true, t("notification.previewRefreshed"));
+        Button previewButton = new Button(t("action.preview"));
+        previewButton.getStyleClass().add("primary-button");
+        previewButton.setWrapText(true);
+        previewButton.setTooltip(fastTooltip(t("action.preview")));
+        previewButton.setAccessibleText(t("action.preview"));
         Button exportButton = new Button(t("action.exportReport"));
         exportButton.getStyleClass().add("secondary-button");
         exportButton.setOnAction(event -> exportReport(fromField, toField, formatCombo, openAfterExport));
@@ -1241,14 +1460,24 @@ public class MainApp extends Application {
                 column(t("report.note"), ReportRow::note, 360)
         );
         preview.setPrefHeight(280);
+        previewButton.setOnAction(event -> {
+            showLoading();
+            preview.getItems().setAll(reportPreviewRows());
+            showNotification(t("notification.previewRefreshed"), true);
+        });
 
-        return screen(
-                sectionHeader(t("evaluation.title"), t("evaluation.subtitle")),
+        List<Node> nodes = new ArrayList<>();
+        nodes.add(sectionHeader(t("evaluation.title"), t("evaluation.subtitle")));
+        if (hasText(focusedReportHandle)) {
+            nodes.add(stateBanner("Report context", "Showing report data for " + focusedReportHandle + ". Use the Reports menu to return to the full report list.", false));
+        }
+        nodes.addAll(List.of(
                 stateBanner(t("evaluation.banner.title"), t("evaluation.banner.detail"), false),
                 split(card(t("evaluation.chart"), chart), card(t("evaluation.filters"), filters)),
                 card(t("evaluation.table"), table),
                 card(t("evaluation.preview"), preview)
-        );
+        ));
+        return screen(nodes.toArray(Node[]::new));
     }
 
     private Node buildSettingsView() {
@@ -1259,6 +1488,253 @@ public class MainApp extends Application {
                 i18n
         );
         return controller.createView();
+    }
+
+    private Node buildOperationsCenterView() {
+        OperationsRepository operationsRepository = applicationContext.operationsRepository();
+
+        ObservableList<OperationsRepository.SubmissionOpsRow> submissionRows = FXCollections.observableArrayList();
+        TableView<OperationsRepository.SubmissionOpsRow> submissionTable = table(
+                submissionRows,
+                column("ID", row -> text(row.submissionId()), 72),
+                column("Platform", OperationsRepository.SubmissionOpsRow::platformCode, 92),
+                column("Handle", OperationsRepository.SubmissionOpsRow::handle, 150),
+                column("Remote ID", OperationsRepository.SubmissionOpsRow::remoteId, 120),
+                column("Problem", row -> text(row.problemCode()) + " " + text(row.problemName()), 260),
+                column("Language", OperationsRepository.SubmissionOpsRow::language, 150),
+                column("Verdict", OperationsRepository.SubmissionOpsRow::verdict, 120),
+                column("Submitted", row -> formatDateTime(row.submittedAt()), 150),
+                column("Source", OperationsRepository.SubmissionOpsRow::sourceCrawlStatus, 100),
+                column("AI", row -> row.latestAnalysisId() == null ? "Pending" : "Analyzed #" + row.latestAnalysisId(), 120),
+                column("AI risk", row -> scoreText(row.latestAiRiskScore()), 90),
+                column("Algorithms", OperationsRepository.SubmissionOpsRow::latestAlgorithms, 260)
+        );
+        submissionTable.setPrefHeight(360);
+
+        TextField handleFilter = new TextField();
+        handleFilter.setPromptText("Handle contains...");
+        TextField verdictFilter = new TextField();
+        verdictFilter.setPromptText("Verdict contains...");
+        TextField languageFilter = new TextField();
+        languageFilter.setPromptText("Language contains...");
+        TextField fromFilter = new TextField();
+        fromFilter.setPromptText("From yyyy-MM-dd");
+        TextField toFilter = new TextField();
+        toFilter.setPromptText("To yyyy-MM-dd");
+        ComboBox<String> platformFilter = combo("ALL", "CODEFORCES", "VJUDGE");
+        ComboBox<String> sourceStatusFilter = combo("ALL", "PENDING", "CRAWLED", "FAILED", "SKIPPED");
+
+        Runnable loadSubmissions = () -> runUiLoad("load submissions", () -> submissionRows.setAll(
+                operationsRepository.searchSubmissions(
+                        handleFilter.getText(),
+                        selectedFilter(platformFilter),
+                        verdictFilter.getText(),
+                        languageFilter.getText(),
+                        selectedFilter(sourceStatusFilter),
+                        parseDateOrNull(fromFilter.getText()),
+                        parseDateOrNull(toFilter.getText()),
+                        500
+                )
+        ));
+        Button loadSubmissionsButton = secondaryButton("Apply filters");
+        loadSubmissionsButton.setOnAction(event -> loadSubmissions.run());
+        FlowPane submissionFilters = actionFlow(
+                handleFilter,
+                platformFilter,
+                verdictFilter,
+                languageFilter,
+                sourceStatusFilter,
+                fromFilter,
+                toFilter,
+                loadSubmissionsButton
+        );
+
+        ObservableList<OperationsRepository.SourceIssueRow> sourceIssueRows = FXCollections.observableArrayList();
+        TableView<OperationsRepository.SourceIssueRow> sourceIssueTable = table(
+                sourceIssueRows,
+                column("Submission", row -> text(row.submissionId()), 95),
+                column("Source", row -> text(row.sourceCodeId()), 90),
+                column("Platform", OperationsRepository.SourceIssueRow::platformCode, 95),
+                column("Handle", OperationsRepository.SourceIssueRow::handle, 150),
+                column("Remote ID", OperationsRepository.SourceIssueRow::remoteId, 120),
+                column("Problem", OperationsRepository.SourceIssueRow::problemCode, 120),
+                column("Status", OperationsRepository.SourceIssueRow::sourceCrawlStatus, 100),
+                column("Last crawl", row -> formatDateTime(row.sourceCrawledAt()), 150),
+                column("Error", OperationsRepository.SourceIssueRow::sourceCrawlError, 520)
+        );
+        sourceIssueTable.setPrefHeight(300);
+        Button reloadIssuesButton = secondaryButton("Refresh source issues");
+        Button retrySourceButton = secondaryButton("Retry selected source");
+        Runnable loadSourceIssues = () -> runUiLoad("load source issues", () ->
+                sourceIssueRows.setAll(operationsRepository.findSourceIssues(300)));
+        reloadIssuesButton.setOnAction(event -> loadSourceIssues.run());
+        retrySourceButton.setOnAction(event -> retrySelectedSourceIssue(sourceIssueTable.getSelectionModel().getSelectedItem(), loadSourceIssues));
+
+        ObservableList<OperationsRepository.AiQueueOpsRow> aiQueueRows = FXCollections.observableArrayList();
+        TableView<OperationsRepository.AiQueueOpsRow> aiQueueTable = table(
+                aiQueueRows,
+                column("Job", row -> text(row.analysisJobId()), 78),
+                column("Source", row -> text(row.sourceCodeId()), 90),
+                column("Submission", row -> text(row.submissionId()), 100),
+                column("Platform", OperationsRepository.AiQueueOpsRow::platformCode, 95),
+                column("Handle", OperationsRepository.AiQueueOpsRow::handle, 150),
+                column("Remote ID", OperationsRepository.AiQueueOpsRow::remoteId, 120),
+                column("Status", OperationsRepository.AiQueueOpsRow::status, 130),
+                column("Attempts", row -> String.valueOf(row.attemptCount()), 90),
+                column("Next retry", row -> formatDateTime(row.nextRetryAt()), 150),
+                column("Last error", OperationsRepository.AiQueueOpsRow::lastError, 440)
+        );
+        aiQueueTable.setPrefHeight(300);
+        Runnable loadAiQueue = () -> runUiLoad("load AI queue", () -> aiQueueRows.setAll(operationsRepository.findAiQueue(300)));
+
+        ObservableList<OperationsRepository.CrawlLogOpsRow> crawlLogRows = FXCollections.observableArrayList();
+        TableView<OperationsRepository.CrawlLogOpsRow> crawlLogTable = table(
+                crawlLogRows,
+                column("ID", row -> text(row.crawlLogId()), 72),
+                column("Type", OperationsRepository.CrawlLogOpsRow::jobType, 92),
+                column("Status", OperationsRepository.CrawlLogOpsRow::status, 110),
+                column("Started", row -> formatDateTime(row.startedAt()), 150),
+                column("Finished", row -> formatDateTime(row.finishedAt()), 150),
+                column("Handles", row -> String.valueOf(row.totalHandles()), 90),
+                column("New", row -> String.valueOf(row.totalNewSubmissions()), 80),
+                column("Errors", row -> String.valueOf(row.totalErrors()), 80),
+                column("Message", OperationsRepository.CrawlLogOpsRow::message, 620)
+        );
+        crawlLogTable.setPrefHeight(300);
+        Runnable loadCrawlLogs = () -> runUiLoad("load crawl logs", () -> crawlLogRows.setAll(operationsRepository.findCrawlLogs(300)));
+
+        ObservableList<OperationsRepository.AnalysisHistoryOpsRow> analysisRows = FXCollections.observableArrayList();
+        TableView<OperationsRepository.AnalysisHistoryOpsRow> analysisHistoryTable = table(
+                analysisRows,
+                column("Analysis", row -> text(row.analysisId()), 90),
+                column("Submission", row -> text(row.submissionId()), 100),
+                column("Platform", OperationsRepository.AnalysisHistoryOpsRow::platformCode, 95),
+                column("Handle", OperationsRepository.AnalysisHistoryOpsRow::handle, 150),
+                column("Model", OperationsRepository.AnalysisHistoryOpsRow::modelName, 150),
+                column("Risk", row -> scoreText(row.aiRiskScore()), 80),
+                column("Prompt hash", OperationsRepository.AnalysisHistoryOpsRow::promptHash, 170),
+                column("Structures", OperationsRepository.AnalysisHistoryOpsRow::dataStructures, 220),
+                column("Algorithms", OperationsRepository.AnalysisHistoryOpsRow::algorithms, 240),
+                column("Raw response", OperationsRepository.AnalysisHistoryOpsRow::rawResponse, 520)
+        );
+        analysisHistoryTable.setPrefHeight(320);
+        Runnable loadAnalysisHistory = () -> runUiLoad("load analysis history", () ->
+                analysisRows.setAll(operationsRepository.findAnalysisHistory(300)));
+
+        ObservableList<OperationsRepository.AppSettingOpsRow> settingRows = FXCollections.observableArrayList();
+        TableView<OperationsRepository.AppSettingOpsRow> settingsTable = table(
+                settingRows,
+                column("Key", OperationsRepository.AppSettingOpsRow::settingKey, 220),
+                column("Value", OperationsRepository.AppSettingOpsRow::settingValue, 260),
+                column("Description", OperationsRepository.AppSettingOpsRow::description, 520),
+                column("Updated", row -> formatDateTime(row.updatedAt()), 150)
+        );
+        settingsTable.setPrefHeight(220);
+        Runnable loadSettings = () -> runUiLoad("load DB settings", () -> settingRows.setAll(operationsRepository.findAppSettings()));
+
+        ObservableList<OperationsRepository.ErrorLogOpsRow> errorRows = FXCollections.observableArrayList();
+        TableView<OperationsRepository.ErrorLogOpsRow> errorTable = table(
+                errorRows,
+                column("ID", row -> text(row.errorLogId()), 80),
+                column("Component", OperationsRepository.ErrorLogOpsRow::component, 140),
+                column("Severity", OperationsRepository.ErrorLogOpsRow::severity, 100),
+                column("Created", row -> formatDateTime(row.createdAt()), 150),
+                column("Message", OperationsRepository.ErrorLogOpsRow::sanitizedMessage, 520),
+                column("Stack", OperationsRepository.ErrorLogOpsRow::stackTrace, 520)
+        );
+        errorTable.setPrefHeight(260);
+        Runnable loadErrors = () -> runUiLoad("load error logs", () -> errorRows.setAll(operationsRepository.findErrorLogs(300)));
+
+        operationsRefreshAll = () -> {
+            loadSubmissions.run();
+            loadSourceIssues.run();
+            loadAiQueue.run();
+            loadCrawlLogs.run();
+            loadAnalysisHistory.run();
+            loadSettings.run();
+            loadErrors.run();
+        };
+        Button refreshAllButton = secondaryButton("Refresh all operations data");
+        refreshAllButton.setOnAction(event -> operationsRefreshAll.run());
+
+        operationsRefreshAll.run();
+
+        return screen(
+                sectionHeader("Operations Center", "Inspect database-backed runtime state: submissions, source issues, crawl logs, AI queue, settings, and errors."),
+                actionFlow(refreshAllButton),
+                card("Submission Explorer", operationTableWithDetail(
+                        new VBox(submissionFilters, submissionTable),
+                        submissionTable,
+                        row -> "Submission #" + row.submissionId()
+                                + "\nPlatform: " + row.platformCode()
+                                + "\nHandle: " + row.handle()
+                                + "\nRemote ID: " + row.remoteId()
+                                + "\nProblem: " + text(row.problemCode()) + " " + text(row.problemName())
+                                + "\nLanguage: " + text(row.language())
+                                + "\nVerdict: " + text(row.verdict())
+                                + "\nSource status: " + text(row.sourceCrawlStatus())
+                                + "\nLatest algorithms: " + text(row.latestAlgorithms()))),
+                card("Source Issues & Retry", operationTableWithDetail(
+                        new VBox(actionFlow(reloadIssuesButton, retrySourceButton), sourceIssueTable),
+                        sourceIssueTable,
+                        row -> "Source issue for submission #" + row.submissionId()
+                                + "\nSource code ID: " + text(row.sourceCodeId())
+                                + "\nPlatform/handle: " + row.platformCode() + "/" + row.handle()
+                                + "\nRemote ID: " + text(row.remoteId())
+                                + "\nStatus: " + text(row.sourceCrawlStatus())
+                                + "\nLast crawl: " + formatDateTime(row.sourceCrawledAt())
+                                + "\nError: " + text(row.sourceCrawlError()))),
+                card("AI Queue", operationTableWithDetail(
+                        aiQueueTable,
+                        aiQueueTable,
+                        row -> "AI job #" + row.analysisJobId()
+                                + "\nSource code ID: " + row.sourceCodeId()
+                                + "\nSubmission ID: " + row.submissionId()
+                                + "\nPlatform/handle: " + row.platformCode() + "/" + row.handle()
+                                + "\nStatus: " + row.status()
+                                + "\nAttempts: " + row.attemptCount()
+                                + "\nNext retry: " + formatDateTime(row.nextRetryAt())
+                                + "\nLast error: " + text(row.lastError()))),
+                card("Crawl Logs", operationTableWithDetail(
+                        crawlLogTable,
+                        crawlLogTable,
+                        row -> "Crawl log #" + row.crawlLogId()
+                                + "\nType/status: " + row.jobType() + " / " + row.status()
+                                + "\nStarted: " + formatDateTime(row.startedAt())
+                                + "\nFinished: " + formatDateTime(row.finishedAt())
+                                + "\nHandles: " + row.totalHandles()
+                                + "\nNew submissions: " + row.totalNewSubmissions()
+                                + "\nErrors: " + row.totalErrors()
+                                + "\nMessage: " + text(row.message()))),
+                card("Analysis History / Raw AI", operationTableWithDetail(
+                        analysisHistoryTable,
+                        analysisHistoryTable,
+                        row -> "Analysis #" + row.analysisId()
+                                + "\nSubmission ID: " + row.submissionId()
+                                + "\nPlatform/handle: " + row.platformCode() + "/" + row.handle()
+                                + "\nModel: " + text(row.modelName())
+                                + "\nPrompt hash: " + text(row.promptHash())
+                                + "\nRisk: " + scoreText(row.aiRiskScore())
+                                + "\nData structures: " + text(row.dataStructures())
+                                + "\nAlgorithms: " + text(row.algorithms())
+                                + "\nRaw response:\n" + text(row.rawResponse()))),
+                card("App Settings in DB", operationTableWithDetail(
+                        settingsTable,
+                        settingsTable,
+                        row -> "Setting: " + row.settingKey()
+                                + "\nValue: " + text(row.settingValue())
+                                + "\nDescription: " + text(row.description())
+                                + "\nUpdated: " + formatDateTime(row.updatedAt()))),
+                card("Error Logs", operationTableWithDetail(
+                        errorTable,
+                        errorTable,
+                        row -> "Error log #" + row.errorLogId()
+                                + "\nComponent: " + row.component()
+                                + "\nSeverity: " + row.severity()
+                                + "\nCreated: " + formatDateTime(row.createdAt())
+                                + "\nMessage: " + text(row.sanitizedMessage())
+                                + "\nStack trace:\n" + text(row.stackTrace())))
+        );
     }
 
     private void applySavedSchedulerConfig() {
@@ -1280,13 +1756,46 @@ public class MainApp extends Application {
         return box;
     }
 
+    private <T> VBox operationTableWithDetail(Node tableContent, TableView<T> table, Function<T, String> detailFactory) {
+        Label detail = new Label("Select a row to inspect full details.");
+        detail.setWrapText(true);
+        detail.setMaxWidth(Double.MAX_VALUE);
+        detail.setMinHeight(Region.USE_PREF_SIZE);
+        detail.getStyleClass().addAll("table-detail", "operation-detail");
+
+        ScrollPane detailScroll = new ScrollPane(detail);
+        detailScroll.setFitToWidth(true);
+        detailScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        detailScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        detailScroll.setMinHeight(96);
+        detailScroll.setPrefHeight(126);
+        detailScroll.getStyleClass().add("operation-detail-scroll");
+
+        table.getSelectionModel().selectedItemProperty().addListener((observable, oldValue, selected) -> {
+            if (selected == null) {
+                detail.setText("Select a row to inspect full details.");
+                return;
+            }
+            detail.setText(detailFactory.apply(selected));
+            detailScroll.setVvalue(0);
+        });
+
+        VBox box = new VBox(tableContent, detailScroll);
+        box.setSpacing(12);
+        VBox.setVgrow(tableContent, Priority.ALWAYS);
+        return box;
+    }
+
     private VBox sectionHeader(String title, String subtitle) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("section-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label subtitleLabel = new Label(subtitle);
         subtitleLabel.getStyleClass().add("muted-text");
         subtitleLabel.setWrapText(true);
+        subtitleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(titleLabel, subtitleLabel);
         box.setSpacing(4);
@@ -1296,6 +1805,8 @@ public class MainApp extends Application {
     private VBox card(String title, Node content) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("card-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(titleLabel, content);
         box.setSpacing(12);
@@ -1306,40 +1817,43 @@ public class MainApp extends Application {
         return box;
     }
 
-    private TilePane split(Node left, Node right) {
-        TilePane box = new TilePane(left, right);
-        box.setHgap(16);
-        box.setVgap(16);
-        box.setPrefColumns(2);
-        box.setPrefTileWidth(520);
-        box.setMaxWidth(Double.MAX_VALUE);
-        box.getStyleClass().add("responsive-split");
-        return box;
+    private GridPane split(Node left, Node right) {
+        GridPane grid = new GridPane();
+        grid.setHgap(16);
+        grid.setVgap(16);
+        grid.setMaxWidth(Double.MAX_VALUE);
+        grid.getStyleClass().add("responsive-split");
+        bindResponsiveGrid(grid, List.of(left, right), 2, 760);
+        return grid;
     }
 
-    private TilePane metricGrid(Node... cards) {
-        TilePane tilePane = new TilePane();
-        tilePane.setHgap(14);
-        tilePane.setVgap(14);
-        tilePane.setPrefColumns(4);
-        tilePane.setPrefTileWidth(210);
-        tilePane.setMaxWidth(Double.MAX_VALUE);
-        tilePane.getChildren().addAll(cards);
-        return tilePane;
+    private GridPane metricGrid(Node... cards) {
+        GridPane grid = new GridPane();
+        grid.setHgap(14);
+        grid.setVgap(14);
+        grid.setMaxWidth(Double.MAX_VALUE);
+        bindResponsiveMetricGrid(grid, List.of(cards));
+        return grid;
     }
 
     private VBox metricCard(String label, String value, String hint) {
         Label valueLabel = new Label(value);
         valueLabel.getStyleClass().add("metric-value");
+        valueLabel.setWrapText(true);
+        valueLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label labelText = new Label(label);
         labelText.getStyleClass().add("metric-label");
+        labelText.setWrapText(true);
+        labelText.setMinHeight(Region.USE_PREF_SIZE);
 
         Label hintText = new Label(hint);
         hintText.getStyleClass().add("metric-hint");
+        hintText.setWrapText(true);
+        hintText.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(valueLabel, labelText, hintText);
-        box.setMinWidth(180);
+        box.setMinWidth(0);
         box.setMaxWidth(Double.MAX_VALUE);
         box.setPadding(new Insets(16));
         box.setSpacing(6);
@@ -1353,13 +1867,16 @@ public class MainApp extends Application {
         table.getColumns().addAll(columns);
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
         table.setPlaceholder(emptyPlaceholder(t("analysis.placeholder.title"), t("analysis.placeholder.detail")));
+        table.setFixedCellSize(-1);
+        table.setMinWidth(0);
+        table.getStyleClass().add("full-text-table");
         return table;
     }
 
     private FlowPane actionFlow(Node... nodes) {
         FlowPane flowPane = new FlowPane(nodes);
-        flowPane.setHgap(10);
-        flowPane.setVgap(10);
+        flowPane.setHgap(14);
+        flowPane.setVgap(12);
         flowPane.setAlignment(Pos.CENTER_LEFT);
         flowPane.getStyleClass().add("action-flow");
         return flowPane;
@@ -1368,6 +1885,8 @@ public class MainApp extends Application {
     private VBox stateBanner(String title, String detail, boolean error) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("state-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label detailLabel = new Label(detail);
         detailLabel.getStyleClass().add("state-detail");
@@ -1382,6 +1901,8 @@ public class MainApp extends Application {
     private VBox emptyPlaceholder(String title, String detail) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("state-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label detailLabel = new Label(detail);
         detailLabel.getStyleClass().add("state-detail");
@@ -1412,20 +1933,84 @@ public class MainApp extends Application {
         column.setCellValueFactory(data -> new SimpleStringProperty(valueFactory.apply(data.getValue())));
         column.setPrefWidth(width);
         column.setCellFactory(ignored -> new TableCell<>() {
+            private final Label cellLabel = new Label();
+
+            {
+                cellLabel.getStyleClass().add("table-cell-wrap-label");
+                cellLabel.setWrapText(true);
+                cellLabel.maxWidthProperty().bind(widthProperty().subtract(18));
+            }
+
             @Override
             protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
                 if (empty || item == null) {
                     setText(null);
+                    setGraphic(null);
                     setTooltip(null);
                     return;
                 }
-                setText(item);
-                setTextOverrun(OverrunStyle.ELLIPSIS);
-                setTooltip(item.length() > 24 ? new Tooltip(item) : null);
+                cellLabel.setText(item);
+                setText(null);
+                setGraphic(cellLabel);
+                setTooltip(item.length() > 24 ? fastTooltip(item) : null);
             }
         });
         return column;
+    }
+
+    private Tooltip fastTooltip(String text) {
+        Tooltip tooltip = new Tooltip(text);
+        tooltip.setShowDelay(Duration.millis(30));
+        tooltip.setHideDelay(Duration.millis(50));
+        tooltip.setShowDuration(Duration.seconds(30));
+        return tooltip;
+    }
+
+    private void bindResponsiveMetricGrid(GridPane grid, List<Node> cards) {
+        Runnable updater = () -> updateResponsiveGrid(grid, cards, 4, 900, 2, 520);
+        grid.widthProperty().addListener((observable, oldValue, newValue) -> updater.run());
+        javafx.application.Platform.runLater(updater);
+    }
+
+    private void bindResponsiveGrid(GridPane grid, List<Node> nodes, int desktopColumns, double tabletThreshold) {
+        Runnable updater = () -> updateResponsiveGrid(grid, nodes, desktopColumns, tabletThreshold, 1, tabletThreshold);
+        grid.widthProperty().addListener((observable, oldValue, newValue) -> updater.run());
+        javafx.application.Platform.runLater(updater);
+    }
+
+    private void updateResponsiveGrid(
+            GridPane grid,
+            List<Node> nodes,
+            int desktopColumns,
+            double desktopThreshold,
+            int tabletColumns,
+            double tabletThreshold
+    ) {
+        double width = grid.getWidth() <= 0 ? 1200 : grid.getWidth();
+        int columns = width >= desktopThreshold ? desktopColumns : width >= tabletThreshold ? tabletColumns : 1;
+        columns = Math.max(1, Math.min(columns, nodes.size()));
+
+        grid.getChildren().clear();
+        grid.getColumnConstraints().clear();
+        for (int column = 0; column < columns; column++) {
+            ColumnConstraints constraints = new ColumnConstraints();
+            constraints.setPercentWidth(100.0 / columns);
+            constraints.setHgrow(Priority.ALWAYS);
+            constraints.setFillWidth(true);
+            grid.getColumnConstraints().add(constraints);
+        }
+
+        for (int index = 0; index < nodes.size(); index++) {
+            Node node = nodes.get(index);
+            if (node instanceof Region region) {
+                region.setMinWidth(0);
+                region.setMaxWidth(Double.MAX_VALUE);
+            }
+            GridPane.setHgrow(node, Priority.ALWAYS);
+            GridPane.setFillWidth(node, true);
+            grid.add(node, index % columns, index / columns);
+        }
     }
 
     private GridPane formGrid() {
@@ -1439,6 +2024,8 @@ public class MainApp extends Application {
     private void addFormRow(GridPane grid, int row, String label, Node control) {
         Label labelNode = new Label(label);
         labelNode.getStyleClass().add("form-label");
+        labelNode.setWrapText(true);
+        labelNode.setMinHeight(Region.USE_PREF_SIZE);
         labelNode.setMinWidth(118);
         labelNode.setPrefWidth(132);
         labelNode.setMaxWidth(152);
@@ -1455,12 +2042,20 @@ public class MainApp extends Application {
         comboBox.getItems().add(first);
         comboBox.getItems().addAll(rest);
         comboBox.getSelectionModel().selectFirst();
+        comboBox.setMinWidth(0);
+        comboBox.setMaxWidth(Double.MAX_VALUE);
+        comboBox.setVisibleRowCount(Math.min(8, comboBox.getItems().size()));
         return comboBox;
     }
 
     private Button actionButton(String label, boolean primary, String successMessage) {
         Button button = new Button(label);
         button.getStyleClass().add(primary ? "primary-button" : "secondary-button");
+        button.setWrapText(true);
+        button.setMinWidth(0);
+        button.setMaxWidth(Double.MAX_VALUE);
+        button.setTooltip(fastTooltip(label));
+        button.setAccessibleText(label);
         button.setOnAction(event -> {
             showLoading();
             showNotification(successMessage, true);
@@ -1471,6 +2066,8 @@ public class MainApp extends Application {
     private Label label(String text) {
         Label label = new Label(text);
         label.getStyleClass().add("form-label");
+        label.setWrapText(true);
+        label.setMinHeight(Region.USE_PREF_SIZE);
         return label;
     }
 
@@ -1501,7 +2098,16 @@ public class MainApp extends Application {
         XYChart.Series<String, Number> series = new XYChart.Series<>();
         rows.stream()
                 .limit(10)
-                .forEach(row -> series.getData().add(new XYChart.Data<>(shortHandle(row.handle()), parseScore(row.overall()))));
+                .forEach(row -> {
+                    XYChart.Data<String, Number> data = new XYChart.Data<>(row.handle(), parseScore(row.overall()));
+                    series.getData().add(data);
+                    javafx.application.Platform.runLater(() -> {
+                        Node node = data.getNode();
+                        if (node != null) {
+                            Tooltip.install(node, fastTooltip(row.handle() + "\n" + t("table.overall") + ": " + row.overall()));
+                        }
+                    });
+                });
         if (rows.isEmpty()) {
             series.getData().add(new XYChart.Data<>(t("analysis.placeholder.title"), 0));
         }
@@ -1525,6 +2131,10 @@ public class MainApp extends Application {
         for (AiAnalysisResult analysis : analyses) {
             rows.add(new AnalysisRow(
                     analysis.getSubmissionId() == null ? "-" : String.valueOf(analysis.getSubmissionId()),
+                    "-",
+                    "-",
+                    "-",
+                    "-",
                     emptyAsDash(analysis.getAnalyzerType()),
                     emptyAsDash(analysis.getDataStructures()),
                     emptyAsDash(analysis.getAlgorithms()),
@@ -1533,6 +2143,31 @@ public class MainApp extends Application {
             ));
         }
         return rows;
+    }
+
+    private ObservableList<AnalysisRow> loadAnalysisRows() {
+        try {
+            ObservableList<AnalysisRow> rows = FXCollections.observableArrayList();
+            for (OperationsRepository.AnalysisHistoryOpsRow row
+                    : applicationContext.operationsRepository().findAnalysisHistory(ANALYSIS_SCREEN_LIMIT)) {
+                rows.add(new AnalysisRow(
+                        row.submissionId() == null ? "-" : String.valueOf(row.submissionId()),
+                        emptyAsDash(row.platformCode()),
+                        emptyAsDash(row.handle()),
+                        emptyAsDash(row.remoteId()),
+                        compactProblem(row.problemCode(), row.problemName()),
+                        emptyAsDash(row.analyzerType()),
+                        emptyAsDash(row.dataStructures()),
+                        emptyAsDash(row.algorithms()),
+                        emptyAsDash(row.aiRiskLevel()),
+                        scoreText(row.codeQualityScore())
+                ));
+            }
+            return rows;
+        } catch (RuntimeException ex) {
+            notifyIfReady(t("analysis.loadFailed", ex.getMessage()), false);
+            return toAnalysisRows(loadAnalyses());
+        }
     }
 
     private ObservableList<SkillRow> loadSkillRows() {
@@ -1657,6 +2292,16 @@ public class MainApp extends Application {
         return platformCode + "/" + handle.getHandle();
     }
 
+    private String compactProblem(String problemCode, String problemName) {
+        if (hasText(problemCode) && hasText(problemName)) {
+            return problemCode + " - " + problemName;
+        }
+        if (hasText(problemCode)) {
+            return problemCode;
+        }
+        return emptyAsDash(problemName);
+    }
+
     private String averageScore(List<AiAnalysisResult> analyses, boolean quality) {
         double total = 0;
         int count = 0;
@@ -1695,12 +2340,99 @@ public class MainApp extends Application {
         return value == null || value.isBlank() ? "-" : value;
     }
 
-    private String shortHandle(String value) {
-        if (value == null || value.isBlank()) {
-            return "-";
+    private String formatDateTime(LocalDateTime value) {
+        return value == null ? "-" : value.format(DATE_TIME_FORMATTER);
+    }
+
+    private String text(Object value) {
+        return value == null ? "-" : String.valueOf(value);
+    }
+
+    private Button secondaryButton(String label) {
+        Button button = new Button(label);
+        button.getStyleClass().add("secondary-button");
+        button.setWrapText(true);
+        button.setMinWidth(0);
+        button.setTooltip(fastTooltip(label));
+        button.setAccessibleText(label);
+        return button;
+    }
+
+    private String selectedFilter(ComboBox<String> comboBox) {
+        if (comboBox == null || comboBox.getValue() == null || "ALL".equalsIgnoreCase(comboBox.getValue())) {
+            return null;
         }
-        String handle = value.contains("/") ? value.substring(value.indexOf('/') + 1) : value;
-        return handle.length() <= 14 ? handle : handle.substring(0, 11) + "...";
+        return comboBox.getValue();
+    }
+
+    private LocalDate parseDateOrNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(value.trim(), DATE_FORMATTER);
+        } catch (RuntimeException ex) {
+            showNotification("Invalid date: " + value + ". Use yyyy-MM-dd.", false);
+            return null;
+        }
+    }
+
+    private void runUiLoad(String action, Runnable runnable) {
+        try {
+            runnable.run();
+        } catch (RuntimeException ex) {
+            showNotification("Cannot " + action + ": " + SecretUtils.sanitizeMessage(ex.getMessage()), false);
+        }
+    }
+
+    private void retrySelectedSourceIssue(
+            OperationsRepository.SourceIssueRow selected,
+            Runnable afterRefresh
+    ) {
+        if (selected == null || selected.handleId() == null) {
+            showNotification("Select one failed/skipped source row first.", false);
+            return;
+        }
+
+        appendWorkflowLog("Retry requested for source issue submission_id=" + selected.submissionId()
+                + ", platform=" + selected.platformCode()
+                + ", handle=" + selected.handle()
+                + ", remote_id=" + selected.remoteId() + ".");
+
+        Task<Void> task = new Task<>() {
+            @Override
+            protected Void call() {
+                appendWorkflowLog("Ensuring visible Chrome bot before retrying source issue.");
+                applicationContext.crawlService().ensureVisibleBotBrowserReady(java.time.Duration.ofSeconds(25));
+                appendWorkflowLog("Retrying source issue by recrawling handle " + selected.platformCode()
+                        + "/" + selected.handle() + ". Previously known submissions without CRAWLED source are no longer skipped.");
+                applicationContext.crawlService().crawlHandleResult(
+                        selected.handleId(),
+                        "DIRECT",
+                        com.example.aicodeanalyzer.crawler.CrawlRequest.UNLIMITED_SUBMISSIONS
+                );
+                return null;
+            }
+        };
+
+        task.setOnSucceeded(event -> {
+            appendWorkflowLog("Source retry finished for submission_id=" + selected.submissionId() + ".");
+            showNotification("Source retry finished. Refreshing operations data.", true);
+            if (afterRefresh != null) {
+                afterRefresh.run();
+            }
+        });
+        task.setOnFailed(event -> {
+            Throwable ex = task.getException();
+            String message = ex == null ? "Unknown retry error." : SecretUtils.sanitizeMessage(ex.getMessage());
+            appendWorkflowLog("Source retry failed for submission_id=" + selected.submissionId()
+                    + ". Reason: " + message);
+            showNotification("Source retry failed: " + message, false);
+        });
+
+        Thread thread = new Thread(task, "source-issue-retry");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     private void notifyIfReady(String message, boolean success) {
@@ -1717,7 +2449,18 @@ public class MainApp extends Application {
         Node create();
     }
 
-    private record AnalysisRow(String submission, String analyzer, String structures, String algorithms, String risk, String quality) {
+    private record AnalysisRow(
+            String submission,
+            String platform,
+            String handle,
+            String remoteId,
+            String problem,
+            String analyzer,
+            String structures,
+            String algorithms,
+            String risk,
+            String quality
+    ) {
     }
 
     private record SkillRow(String rank, String handle, String ds, String algorithm, String quality, String risk, String overall, String summary) {

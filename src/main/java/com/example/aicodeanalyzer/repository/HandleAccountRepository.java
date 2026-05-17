@@ -69,6 +69,67 @@ public class HandleAccountRepository extends JdbcRepositorySupport {
         }
     }
 
+    public List<HandlePipelineStats> findPipelineStats() {
+        String sql = """
+                WITH analysis_by_submission AS (
+                    SELECT submission_id,
+                           COUNT(analysis_id) AS analysis_count
+                    FROM dbo.ai_analysis_results
+                    GROUP BY submission_id
+                ),
+                latest_handle_log AS (
+                    SELECT h.handle_id,
+                           cl.total_new_submissions,
+                           cl.status,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY h.handle_id
+                               ORDER BY cl.started_at DESC, cl.crawl_log_id DESC
+                           ) AS row_number
+                    FROM dbo.programming_handles h
+                    JOIN dbo.platforms p ON p.platform_id = h.platform_id
+                    LEFT JOIN dbo.crawl_logs cl
+                        ON cl.message LIKE '%' + p.code + '/' + h.handle + '%'
+                       AND cl.total_handles = 1
+                )
+                SELECT h.handle_id,
+                       COUNT(s.submission_id) AS total_submissions,
+                       SUM(CASE
+                               WHEN sc.source_code_id IS NOT NULL
+                                AND sc.code_content IS NOT NULL
+                                AND COALESCE(analysis.analysis_count, 0) = 0
+                               THEN 1 ELSE 0
+                           END) AS pending_ai,
+                       SUM(CASE WHEN s.source_crawl_status IN ('FAILED', 'SKIPPED') THEN 1 ELSE 0 END) AS source_issues,
+                       COALESCE(MAX(CASE WHEN latest.row_number = 1 THEN latest.total_new_submissions END), 0) AS last_new_submissions,
+                       COALESCE(MAX(CASE WHEN latest.row_number = 1 THEN latest.status END), '-') AS last_status
+                FROM dbo.programming_handles h
+                LEFT JOIN dbo.submissions s ON s.handle_id = h.handle_id
+                LEFT JOIN dbo.source_codes sc ON sc.submission_id = s.submission_id
+                LEFT JOIN analysis_by_submission analysis ON analysis.submission_id = s.submission_id
+                LEFT JOIN latest_handle_log latest ON latest.handle_id = h.handle_id AND latest.row_number = 1
+                GROUP BY h.handle_id
+                """;
+
+        List<HandlePipelineStats> stats = new ArrayList<>();
+        try (Connection connection = connectionFactory.createConnection();
+             PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                stats.add(new HandlePipelineStats(
+                        resultSet.getLong("handle_id"),
+                        resultSet.getLong("total_submissions"),
+                        resultSet.getLong("pending_ai"),
+                        resultSet.getLong("source_issues"),
+                        resultSet.getLong("last_new_submissions"),
+                        resultSet.getString("last_status")
+                ));
+            }
+            return stats;
+        } catch (SQLException ex) {
+            throw databaseException("finding handle pipeline stats", ex);
+        }
+    }
+
     public Optional<HandleAccount> findHandleByPlatformAndName(long platformId, String handle) {
         String sql = """
                 SELECT handle_id, platform_id, handle, display_name, group_name, rating, rank_name,
@@ -200,14 +261,52 @@ public class HandleAccountRepository extends JdbcRepositorySupport {
     }
 
     public boolean delete(long handleId) {
-        String sql = "DELETE FROM dbo.programming_handles WHERE handle_id = ?";
-
-        try (Connection connection = connectionFactory.createConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setLong(1, handleId);
-            return statement.executeUpdate() > 0;
+        try (Connection connection = connectionFactory.createConnection()) {
+            boolean previousAutoCommit = connection.getAutoCommit();
+            connection.setAutoCommit(false);
+            try {
+                deleteByHandleId(
+                        connection,
+                        "DELETE FROM dbo.analysis_jobs WHERE submission_id IN "
+                                + "(SELECT submission_id FROM dbo.submissions WHERE handle_id = ?)",
+                        handleId
+                );
+                deleteByHandleId(
+                        connection,
+                        "DELETE FROM dbo.ai_analysis_results WHERE submission_id IN "
+                                + "(SELECT submission_id FROM dbo.submissions WHERE handle_id = ?)",
+                        handleId
+                );
+                deleteByHandleId(
+                        connection,
+                        "DELETE FROM dbo.source_codes WHERE submission_id IN "
+                                + "(SELECT submission_id FROM dbo.submissions WHERE handle_id = ?)",
+                        handleId
+                );
+                deleteByHandleId(connection, "DELETE FROM dbo.submissions WHERE handle_id = ?", handleId);
+                deleteByHandleId(connection, "DELETE FROM dbo.user_skill_scores WHERE handle_id = ?", handleId);
+                boolean deleted = deleteByHandleId(
+                        connection,
+                        "DELETE FROM dbo.programming_handles WHERE handle_id = ?",
+                        handleId
+                ) > 0;
+                connection.commit();
+                connection.setAutoCommit(previousAutoCommit);
+                return deleted;
+            } catch (SQLException | RuntimeException ex) {
+                connection.rollback();
+                connection.setAutoCommit(previousAutoCommit);
+                throw ex;
+            }
         } catch (SQLException ex) {
             throw databaseException("deleting handle", ex);
+        }
+    }
+
+    private int deleteByHandleId(Connection connection, String sql, long handleId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, handleId);
+            return statement.executeUpdate();
         }
     }
 
@@ -228,5 +327,15 @@ public class HandleAccountRepository extends JdbcRepositorySupport {
                 getLocalDateTime(resultSet, "created_at"),
                 getLocalDateTime(resultSet, "updated_at")
         );
+    }
+
+    public record HandlePipelineStats(
+            long handleId,
+            long totalSubmissions,
+            long pendingAi,
+            long sourceIssues,
+            long lastNewSubmissions,
+            String lastStatus
+    ) {
     }
 }

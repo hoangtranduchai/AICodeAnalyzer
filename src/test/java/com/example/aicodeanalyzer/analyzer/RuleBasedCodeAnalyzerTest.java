@@ -123,16 +123,20 @@ class RuleBasedCodeAnalyzerTest {
                 "CODEFORCES",
                 "Codeforces",
                 "tourist",
+                "123456",
                 "1703A",
                 "YES or YES?",
                 "GNU C++17",
                 "OK",
                 LocalDateTime.of(2026, 5, 13, 10, 30),
+                "CRAWLED",
+                null,
                 code,
                 "hash",
                 code.split("\\R", -1).length,
                 code.length(),
                 LocalDateTime.of(2026, 5, 13, 10, 31),
+                null,
                 null
         );
     }

@@ -5,6 +5,7 @@
             <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{36} - %msg%n</pattern>
         </encoder>
     </appender>
+    <appender name="UI" class="com.example.aicodeanalyzer.ui.logging.UiLogbackAppender"/>
 
     <logger name="org.apache.poi" level="WARN"/>
     <logger name="org.apache.xmlbeans" level="WARN"/>
@@ -12,5 +13,6 @@
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="UI"/>
     </root>
 </configuration>

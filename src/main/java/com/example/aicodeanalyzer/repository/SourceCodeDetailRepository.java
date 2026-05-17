@@ -35,7 +35,7 @@ public class SourceCodeDetailRepository extends JdbcRepositorySupport {
 
     private List<SourceCodeDetail> findRecent(int limit, boolean includeCodeContent) {
         String sql = selectSourceCodeDetailSql(includeCodeContent) + """
-                ORDER BY s.submitted_at DESC, sc.source_code_id DESC
+                ORDER BY p.code ASC, h.handle ASC, s.submitted_at DESC, sc.source_code_id DESC
                 OFFSET 0 ROWS FETCH NEXT ? ROWS ONLY
                 """;
 
@@ -102,11 +102,14 @@ public class SourceCodeDetailRepository extends JdbcRepositorySupport {
                        sc.line_count,
                        sc.char_count,
                        sc.fetched_at,
+                       s.platform_submission_id AS remote_id,
                        s.problem_code,
                        s.problem_name,
                        s.language,
                        s.verdict,
                        s.submitted_at,
+                       s.source_crawl_status,
+                       s.source_crawl_error,
                        h.handle,
                        p.code AS platform_code,
                        p.name AS platform_name,
@@ -124,11 +127,13 @@ public class SourceCodeDetailRepository extends JdbcRepositorySupport {
                        ar.raw_response,
                        ar.prompt_hash,
                        ar.created_at AS analysis_created_at,
-                       ar.updated_at AS analysis_updated_at
+                      ar.updated_at AS analysis_updated_at,
+                      aj.status AS analysis_job_status
                 FROM dbo.source_codes sc
                 JOIN dbo.submissions s ON s.submission_id = sc.submission_id
                 JOIN dbo.programming_handles h ON h.handle_id = s.handle_id
                 JOIN dbo.platforms p ON p.platform_id = h.platform_id
+                  LEFT JOIN dbo.analysis_jobs aj ON aj.source_code_id = sc.source_code_id
                 LEFT JOIN dbo.ai_analysis_results ar ON ar.analysis_id = (
                     SELECT TOP 1 latest.analysis_id
                     FROM dbo.ai_analysis_results latest
@@ -145,17 +150,21 @@ public class SourceCodeDetailRepository extends JdbcRepositorySupport {
                 resultSet.getString("platform_code"),
                 resultSet.getString("platform_name"),
                 resultSet.getString("handle"),
+                resultSet.getString("remote_id"),
                 resultSet.getString("problem_code"),
                 resultSet.getString("problem_name"),
                 resultSet.getString("language"),
                 resultSet.getString("verdict"),
                 getLocalDateTime(resultSet, "submitted_at"),
+                resultSet.getString("source_crawl_status"),
+                resultSet.getString("source_crawl_error"),
                 resultSet.getString("code_content"),
                 resultSet.getString("code_hash"),
                 (Integer) resultSet.getObject("line_count"),
                 (Integer) resultSet.getObject("char_count"),
                 getLocalDateTime(resultSet, "fetched_at"),
-                mapAnalysis(resultSet)
+                mapAnalysis(resultSet),
+                resultSet.getString("analysis_job_status")
         );
     }
 

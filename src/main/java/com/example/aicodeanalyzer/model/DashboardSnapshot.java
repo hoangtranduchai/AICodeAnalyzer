@@ -28,6 +28,8 @@ public record DashboardSnapshot(
                 && summary.totalSubmissions() == 0
                 && summary.pendingAnalysisSources() == 0
                 && summary.analyzedSourceCodes() == 0
+                && summary.sourceIssueCount() == 0
+                && summary.recentCrawlErrors() == 0
                 && !hasPlatformSubmissions
                 && averageAlgorithmScores.isEmpty()
                 && topOverallHandles.isEmpty()
@@ -39,10 +41,11 @@ public record DashboardSnapshot(
             long totalSubmissions,
             long pendingAnalysisSources,
             long analyzedSourceCodes,
+            long sourceIssueCount,
             long recentCrawlErrors
     ) {
         public static DashboardSummary empty() {
-            return new DashboardSummary(0, 0, 0, 0, 0);
+            return new DashboardSummary(0, 0, 0, 0, 0, 0);
         }
     }
 

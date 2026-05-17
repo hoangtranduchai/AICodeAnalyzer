@@ -345,12 +345,9 @@ public class PlaywrightCdpSourceFetcher implements SourceFetcher, AutoCloseable 
             page = defaultBrowserContext().newPage();
             sleepRandomHumanDelay();
             Response response = page.navigate(sourceUrl, new Page.NavigateOptions().setTimeout(effectiveTimeout.toMillis()));
-            if (response != null && response.status() == 404) {
-                return SourceFetchResult.unavailable(
-                        SourceAvailability.SOURCE_NOT_AVAILABLE,
-                        sourceOrigin,
-                        notFoundMessage(sourceOrigin, "Source page returned HTTP 404.")
-                );
+            SourceFetchResult statusResult = classifyNavigationStatus(response, sourceOrigin, sourceUrl);
+            if (statusResult != null) {
+                return statusResult;
             }
             page.waitForSelector(selector, new Page.WaitForSelectorOptions().setTimeout(effectiveTimeout.toMillis()));
             String sourceCode = readSourceText(page, selector);
@@ -382,12 +379,13 @@ public class PlaywrightCdpSourceFetcher implements SourceFetcher, AutoCloseable 
             page = defaultBrowserContext().newPage();
             sleepRandomHumanDelay();
             Response response = page.navigate(sourceUrl, new Page.NavigateOptions().setTimeout(effectiveTimeout.toMillis()));
-            if (response != null && response.status() == 404) {
-                return SourceFetchResult.unavailable(
-                        SourceAvailability.SOURCE_NOT_AVAILABLE,
-                        SourceOrigin.VJUDGE_AUTHORIZED_HTML,
-                        notFoundMessage(SourceOrigin.VJUDGE_AUTHORIZED_HTML, "Source page returned HTTP 404.")
-                );
+            SourceFetchResult statusResult = classifyNavigationStatus(
+                    response,
+                    SourceOrigin.VJUDGE_AUTHORIZED_HTML,
+                    sourceUrl
+            );
+            if (statusResult != null) {
+                return statusResult;
             }
 
             SourceFetchResult dataEndpointResult = fetchVjudgeSourceFromDataEndpoint(page, sourceUrl, effectiveTimeout);
@@ -469,6 +467,20 @@ public class PlaywrightCdpSourceFetcher implements SourceFetcher, AutoCloseable 
             // Page content is only diagnostic here.
         }
         String lower = html == null ? "" : html.toLowerCase(Locale.ROOT);
+        if (lower.contains("403 forbidden") || lower.contains("access denied")) {
+            return SourceFetchResult.unavailable(
+                    SourceAvailability.PERMISSION_DENIED,
+                    sourceOrigin,
+                    forbiddenMessage(sourceOrigin, page == null ? "" : page.url())
+            );
+        }
+        if (lower.contains("429 too many requests") || lower.contains("too many requests")) {
+            return SourceFetchResult.unavailable(
+                    SourceAvailability.RATE_LIMITED,
+                    sourceOrigin,
+                    "Source page appears rate-limited. Wait a little, keep the bot Chrome profile logged in, then retry."
+            );
+        }
         if (lower.contains("requested url was not found")
                 || lower.contains("was not found on this server")
                 || lower.contains("запрошенный url")) {
@@ -497,6 +509,59 @@ public class PlaywrightCdpSourceFetcher implements SourceFetcher, AutoCloseable 
                 sourceOrigin,
                 "Timed out waiting for " + selector + ": " + safeMessage(ex)
         );
+    }
+
+    private SourceFetchResult classifyNavigationStatus(
+            Response response,
+            SourceOrigin sourceOrigin,
+            String sourceUrl
+    ) {
+        if (response == null) {
+            return null;
+        }
+        int status = response.status();
+        if (status >= 200 && status < 300) {
+            return null;
+        }
+        if (status == 401) {
+            return SourceFetchResult.unavailable(
+                    SourceAvailability.LOGIN_REQUIRED,
+                    sourceOrigin,
+                    "Source page returned HTTP 401 for " + sourceUrl
+                            + ". Log in with the bot Chrome profile and retry."
+            );
+        }
+        if (status == 403) {
+            return SourceFetchResult.unavailable(
+                    SourceAvailability.PERMISSION_DENIED,
+                    sourceOrigin,
+                    forbiddenMessage(sourceOrigin, sourceUrl)
+            );
+        }
+        if (status == 404) {
+            return SourceFetchResult.unavailable(
+                    SourceAvailability.SOURCE_NOT_AVAILABLE,
+                    sourceOrigin,
+                    notFoundMessage(sourceOrigin, "Source page returned HTTP 404 for " + sourceUrl + ".")
+            );
+        }
+        if (status == 429) {
+            return SourceFetchResult.unavailable(
+                    SourceAvailability.RATE_LIMITED,
+                    sourceOrigin,
+                    "Source page returned HTTP 429 for " + sourceUrl
+                            + ". The judge is rate limiting this browser session; wait and retry."
+            );
+        }
+        if (status >= 500) {
+            return SourceFetchResult.unavailable(
+                    SourceAvailability.SOURCE_NOT_AVAILABLE,
+                    sourceOrigin,
+                    "Source page returned HTTP " + status + " for " + sourceUrl
+                            + ". The judge server may be temporarily unavailable."
+            );
+        }
+        return null;
     }
 
     private void sleepRandomHumanDelay() {
@@ -710,6 +775,19 @@ public class PlaywrightCdpSourceFetcher implements SourceFetcher, AutoCloseable 
             return prefix + " For Codeforces use cf:<contestId>/<submissionId>, not only cf:<submissionId>.";
         }
         return prefix + " Check that the submission id is correct and the bot account can view it.";
+    }
+
+    private String forbiddenMessage(SourceOrigin sourceOrigin, String sourceUrl) {
+        if (sourceOrigin == SourceOrigin.CODEFORCES_AUTHORIZED_HTML) {
+            return "Codeforces returned HTTP 403 for " + sourceUrl
+                    + ". This usually means the submission page is private, Gym/group-restricted, blocked for this session,"
+                    + " or the bot Chrome profile is not logged into an account that can view it.";
+        }
+        if (sourceOrigin == SourceOrigin.VJUDGE_AUTHORIZED_HTML) {
+            return "VJudge returned HTTP 403 for " + sourceUrl
+                    + ". Log in with the bot Chrome profile using an account that can view this solution.";
+        }
+        return "Source page returned HTTP 403 for " + sourceUrl + ".";
     }
 
     private void closePageQuietly(Page page) {

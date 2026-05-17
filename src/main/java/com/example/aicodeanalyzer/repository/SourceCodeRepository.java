@@ -143,12 +143,24 @@ public class SourceCodeRepository extends JdbcRepositorySupport {
     }
 
     public boolean delete(long sourceCodeId) {
-        String sql = "DELETE FROM dbo.source_codes WHERE source_code_id = ?";
+        String deleteJobsSql = "DELETE FROM dbo.analysis_jobs WHERE source_code_id = ?";
+        String deleteSourceSql = "DELETE FROM dbo.source_codes WHERE source_code_id = ?";
 
-        try (Connection connection = connectionFactory.createConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setLong(1, sourceCodeId);
-            return statement.executeUpdate() > 0;
+        try (Connection connection = connectionFactory.createConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement deleteJobs = connection.prepareStatement(deleteJobsSql);
+                 PreparedStatement deleteSource = connection.prepareStatement(deleteSourceSql)) {
+                deleteJobs.setLong(1, sourceCodeId);
+                deleteJobs.executeUpdate();
+
+                deleteSource.setLong(1, sourceCodeId);
+                boolean deleted = deleteSource.executeUpdate() > 0;
+                connection.commit();
+                return deleted;
+            } catch (SQLException ex) {
+                connection.rollback();
+                throw ex;
+            }
         } catch (SQLException ex) {
             throw databaseException("deleting source code", ex);
         }

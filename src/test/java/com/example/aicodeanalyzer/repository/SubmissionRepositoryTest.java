@@ -177,6 +177,39 @@ class SubmissionRepositoryTest {
     }
 
     @Test
+    void sourceCrawledKnownIdsExcludeFailedAndSkippedSourcesSoCrawlerCanRetryThem() {
+        DatabaseConnectionFactory factory = RepositoryTestSupport.createFactoryWithSchema();
+        Platform platform = RepositoryTestSupport.seedPlatform(factory);
+        HandleAccount handle = RepositoryTestSupport.seedHandle(factory, platform.getPlatformId(), "retry_source_user");
+        SubmissionRepository repository = new SubmissionRepository(factory);
+
+        Submission crawled = repository.save(RepositoryTestSupport.submission(
+                handle.getHandleId(),
+                "source-ok",
+                LocalDateTime.of(2026, 5, 12, 10, 0)
+        ));
+        Submission failed = repository.save(RepositoryTestSupport.submission(
+                handle.getHandleId(),
+                "source-failed",
+                LocalDateTime.of(2026, 5, 12, 11, 0)
+        ));
+        Submission skipped = repository.save(RepositoryTestSupport.submission(
+                handle.getHandleId(),
+                "source-skipped",
+                LocalDateTime.of(2026, 5, 12, 12, 0)
+        ));
+
+        repository.updateSourceCrawlStatus(crawled.getSubmissionId(), "CRAWLED", LocalDateTime.now(), null);
+        repository.updateSourceCrawlStatus(failed.getSubmissionId(), "FAILED", LocalDateTime.now(), "403");
+        repository.updateSourceCrawlStatus(skipped.getSubmissionId(), "SKIPPED", LocalDateTime.now(), "hidden");
+
+        assertEquals(
+                java.util.Set.of("source-ok"),
+                repository.findSubmissionIdsByPlatformAndHandleWithCrawledSource("CODEFORCES", "retry_source_user")
+        );
+    }
+
+    @Test
     void saveSubmissionIfNotExistsSkipsDuplicateRemoteSubmission() {
         DatabaseConnectionFactory factory = RepositoryTestSupport.createFactoryWithSchema();
         Platform platform = RepositoryTestSupport.seedPlatform(factory);

@@ -33,7 +33,6 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
-import javafx.scene.layout.TilePane;
 import javafx.scene.layout.VBox;
 
 import java.math.BigDecimal;
@@ -62,6 +61,8 @@ public class DashboardController {
     private Label totalSubmissionsValue;
     private Label pendingAnalysisValue;
     private Label analyzedSourcesValue;
+    private Label sourceIssuesValue;
+    private Label recentErrorsValue;
     private Label emptyStateLabel;
     private Label platformChartEmptyLabel;
     private Label algorithmChartEmptyLabel;
@@ -94,14 +95,25 @@ public class DashboardController {
         return createView(false, false);
     }
 
+    public void refreshDashboard() {
+        if (refreshButton != null && !refreshButton.isDisable()) {
+            refresh(false);
+        }
+    }
+
     private Node createView(boolean includeHeader, boolean padded) {
         totalHandlesValue = metricValueLabel();
         totalSubmissionsValue = metricValueLabel();
         pendingAnalysisValue = metricValueLabel();
         analyzedSourcesValue = metricValueLabel();
+        sourceIssuesValue = metricValueLabel();
+        recentErrorsValue = metricValueLabel();
 
         refreshButton = new Button(t("action.refresh"));
         refreshButton.getStyleClass().add("primary-button");
+        refreshButton.setWrapText(true);
+        refreshButton.setTooltip(fastTooltip(t("action.refresh")));
+        refreshButton.setAccessibleText(t("action.refresh"));
         refreshButton.setOnAction(event -> refresh(true));
 
         dashboardLoadingLabel = new Label(t("dashboard.loading"));
@@ -110,7 +122,9 @@ public class DashboardController {
         dashboardLoadingLabel.setManaged(false);
         dashboardLoadingLabel.setWrapText(true);
         dashboardLoadingLabel.setMinWidth(0);
-        dashboardLoadingLabel.setMaxWidth(220);
+        dashboardLoadingLabel.setMaxWidth(320);
+        dashboardLoadingLabel.setMinHeight(Region.USE_PREF_SIZE);
+        dashboardLoadingLabel.setAccessibleText(t("dashboard.loading"));
 
         FlowPane headerActions = new FlowPane(dashboardLoadingLabel, refreshButton);
         headerActions.getStyleClass().add("dashboard-header-actions");
@@ -138,7 +152,9 @@ public class DashboardController {
                 metricCard(t("dashboard.metric.handles"), totalHandlesValue, t("dashboard.metric.handles.hint")),
                 metricCard(t("dashboard.metric.submissions"), totalSubmissionsValue, t("dashboard.metric.submissions.hint")),
                 metricCard(t("dashboard.metric.pending"), pendingAnalysisValue, t("dashboard.metric.pending.hint")),
-                metricCard(t("dashboard.metric.analyzed"), analyzedSourcesValue, t("dashboard.metric.analyzed.hint"))
+                metricCard(t("dashboard.metric.analyzed"), analyzedSourcesValue, t("dashboard.metric.analyzed.hint")),
+                metricCard(t("dashboard.metric.sourceIssues"), sourceIssuesValue, t("dashboard.metric.sourceIssues.hint")),
+                metricCard(t("dashboard.metric.errors"), recentErrorsValue, t("dashboard.metric.errors.hint"))
         );
         GridPane metrics = metricGrid(metricCards);
 
@@ -228,6 +244,8 @@ public class DashboardController {
         totalSubmissionsValue.setText(String.valueOf(snapshot.summary().totalSubmissions()));
         pendingAnalysisValue.setText(String.valueOf(snapshot.summary().pendingAnalysisSources()));
         analyzedSourcesValue.setText(String.valueOf(snapshot.summary().analyzedSourceCodes()));
+        sourceIssuesValue.setText(String.valueOf(snapshot.summary().sourceIssueCount()));
+        recentErrorsValue.setText(String.valueOf(snapshot.summary().recentCrawlErrors()));
 
         updatePlatformChart(snapshot.submissionsByPlatform());
         updateAlgorithmChart(snapshot.averageAlgorithmScores());
@@ -306,9 +324,9 @@ public class DashboardController {
         }
 
         XYChart.Series<String, Number> series = new XYChart.Series<>();
-        stats.stream().limit(8).forEach(stat -> {
+        stats.forEach(stat -> {
             XYChart.Data<String, Number> data = new XYChart.Data<>(
-                    shortHandle(stat.handle()),
+                    stat.handle(),
                     stat.averageAlgorithmScore()
             );
             series.getData().add(data);
@@ -411,10 +429,13 @@ public class DashboardController {
     private VBox sectionHeader(String title, String subtitle) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("section-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label subtitleLabel = new Label(subtitle);
         subtitleLabel.getStyleClass().add("muted-text");
         subtitleLabel.setWrapText(true);
+        subtitleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(titleLabel, subtitleLabel);
         box.setSpacing(4);
@@ -428,10 +449,13 @@ public class DashboardController {
 
     private HBox tableHeader(Label titleLabel, Spinner<Integer> spinner) {
         titleLabel.getStyleClass().add("card-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
         HBox.setHgrow(titleLabel, Priority.ALWAYS);
 
         Label topLimitLabel = new Label(t("dashboard.topLimit"));
         topLimitLabel.getStyleClass().add("small-label");
+        topLimitLabel.setWrapText(true);
         HBox limitControl = new HBox(topLimitLabel, spinner);
         limitControl.getStyleClass().add("dashboard-top-limit");
         limitControl.setAlignment(Pos.CENTER_RIGHT);
@@ -465,18 +489,6 @@ public class DashboardController {
         return grid;
     }
 
-    private TilePane responsiveSplit(Node... nodes) {
-        TilePane tilePane = new TilePane();
-        tilePane.setHgap(16);
-        tilePane.setVgap(16);
-        tilePane.setPrefColumns(2);
-        tilePane.setPrefTileWidth(520);
-        tilePane.setMaxWidth(Double.MAX_VALUE);
-        tilePane.getStyleClass().add("responsive-split");
-        tilePane.getChildren().addAll(nodes);
-        return tilePane;
-    }
-
     private GridPane chartGrid(List<Node> cards) {
         GridPane grid = new GridPane();
         grid.setHgap(16);
@@ -490,10 +502,13 @@ public class DashboardController {
     private VBox metricCard(String label, Label valueLabel, String hint) {
         Label labelText = new Label(label);
         labelText.getStyleClass().add("metric-label");
+        labelText.setWrapText(true);
+        labelText.setMinHeight(Region.USE_PREF_SIZE);
 
         Label hintText = new Label(hint);
         hintText.getStyleClass().add("metric-hint");
         hintText.setWrapText(true);
+        hintText.setMinHeight(Region.USE_PREF_SIZE);
 
         VBox box = new VBox(valueLabel, labelText, hintText);
         box.setMinWidth(0);
@@ -507,12 +522,16 @@ public class DashboardController {
     private Label metricValueLabel() {
         Label label = new Label("0");
         label.getStyleClass().add("metric-value");
+        label.setWrapText(true);
+        label.setMinHeight(Region.USE_PREF_SIZE);
         return label;
     }
 
     private VBox emptyPlaceholder(String title, String detail) {
         Label titleLabel = new Label(title);
         titleLabel.getStyleClass().add("state-title");
+        titleLabel.setWrapText(true);
+        titleLabel.setMinHeight(Region.USE_PREF_SIZE);
 
         Label detailLabel = new Label(detail);
         detailLabel.getStyleClass().add("state-detail");
@@ -531,6 +550,8 @@ public class DashboardController {
         table.getColumns().setAll(List.of(columns));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
         table.setFixedCellSize(-1);
+        table.setMinWidth(0);
+        table.getStyleClass().add("full-text-table");
         return table;
     }
 
@@ -589,12 +610,6 @@ public class DashboardController {
         return label;
     }
 
-    private void bindResponsiveTiles(VBox screen, TilePane tilePane, int maxColumns, double minTileWidth) {
-        Runnable updater = () -> updateResponsiveTiles(screen.getWidth(), tilePane, maxColumns, minTileWidth);
-        screen.widthProperty().addListener((observable, oldValue, newValue) -> updater.run());
-        Platform.runLater(updater);
-    }
-
     private void bindResponsiveMetricGrid(VBox screen, GridPane grid, List<Node> cards) {
         Runnable updater = () -> updateResponsiveMetricGrid(screen.getWidth(), grid, cards);
         screen.widthProperty().addListener((observable, oldValue, newValue) -> updater.run());
@@ -610,8 +625,10 @@ public class DashboardController {
     private void updateResponsiveMetricGrid(double screenWidth, GridPane grid, List<Node> cards) {
         double availableWidth = Math.max(180, screenWidth - 48);
         int columns;
-        if (availableWidth >= 900) {
-            columns = 4;
+        if (availableWidth >= 1100) {
+            columns = Math.min(6, cards.size());
+        } else if (availableWidth >= 760) {
+            columns = 3;
         } else if (availableWidth >= 520) {
             columns = 2;
         } else {
@@ -666,46 +683,12 @@ public class DashboardController {
         }
     }
 
-    private void updateResponsiveTiles(double screenWidth, TilePane tilePane, int maxColumns, double minTileWidth) {
-        double availableWidth = Math.max(180, screenWidth - 48);
-        tilePane.setPrefWidth(availableWidth);
-        tilePane.setMinWidth(0);
-        tilePane.setMaxWidth(Double.MAX_VALUE);
-        int columns;
-        if (maxColumns == 4) {
-            if (availableWidth >= 900) {
-                columns = 4;
-            } else if (availableWidth >= 520) {
-                columns = 2;
-            } else {
-                columns = 1;
-            }
-        } else {
-            columns = Math.max(1, maxColumns);
-        }
-        while (minTileWidth > 0 && columns > 1
-                && ((availableWidth - tilePane.getHgap() * (columns - 1)) / columns) < minTileWidth) {
-            columns--;
-        }
-        double tileWidth = (availableWidth - tilePane.getHgap() * (columns - 1)) / columns;
-        tileWidth = Math.max(0, Math.min(availableWidth, tileWidth));
-        tilePane.setPrefColumns(columns);
-        tilePane.setPrefTileWidth(tileWidth);
-    }
-
     private String score(BigDecimal value) {
         return value == null ? "-" : SCORE_FORMAT.format(value);
     }
 
     private String valueOrEmpty(String value) {
         return value == null || value.isBlank() ? "-" : value;
-    }
-
-    private String shortHandle(String value) {
-        if (value == null || value.isBlank()) {
-            return "-";
-        }
-        return value.length() <= 14 ? value : value.substring(0, 11) + "...";
     }
 
     private Spinner<Integer> topLimitSpinner() {

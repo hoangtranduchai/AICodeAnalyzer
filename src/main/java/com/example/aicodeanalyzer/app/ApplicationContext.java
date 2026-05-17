@@ -1,7 +1,9 @@
 package com.example.aicodeanalyzer.app;
 
 import com.example.aicodeanalyzer.repository.AiAnalysisResultRepository;
+import com.example.aicodeanalyzer.repository.AnalysisJobRepository;
 import com.example.aicodeanalyzer.repository.HandleAccountRepository;
+import com.example.aicodeanalyzer.repository.OperationsRepository;
 import com.example.aicodeanalyzer.repository.PlatformRepository;
 import com.example.aicodeanalyzer.repository.SkillScoreRepository;
 import com.example.aicodeanalyzer.repository.SourceCodeRepository;
@@ -25,8 +27,10 @@ public class ApplicationContext {
     private final SubmissionRepository submissionRepository = new SubmissionRepository();
     private final SourceCodeRepository sourceCodeRepository = new SourceCodeRepository();
     private final AiAnalysisResultRepository aiAnalysisResultRepository = new AiAnalysisResultRepository();
+    private final AnalysisJobRepository analysisJobRepository = new AnalysisJobRepository();
     private final SkillScoreRepository skillScoreRepository = new SkillScoreRepository();
     private final HandleAccountRepository handleAccountRepository = new HandleAccountRepository();
+    private final OperationsRepository operationsRepository = new OperationsRepository();
     private final PlatformRepository platformRepository = new PlatformRepository();
     private final CrawlService crawlService = new CrawlService();
     private final AnalysisService analysisService = new AnalysisService();
@@ -94,12 +98,20 @@ public class ApplicationContext {
         return aiAnalysisResultRepository;
     }
 
+    public AnalysisJobRepository analysisJobRepository() {
+        return analysisJobRepository;
+    }
+
     public SkillScoreRepository skillScoreRepository() {
         return skillScoreRepository;
     }
 
     public HandleAccountRepository handleAccountRepository() {
         return handleAccountRepository;
+    }
+
+    public OperationsRepository operationsRepository() {
+        return operationsRepository;
     }
 
     public PlatformRepository platformRepository() {
