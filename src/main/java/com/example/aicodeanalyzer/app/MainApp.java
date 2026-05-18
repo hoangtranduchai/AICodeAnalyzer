@@ -82,6 +82,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * JavaFX entry point. Builds the first functional desktop UI shell for the project.
@@ -131,6 +132,8 @@ public class MainApp extends Application {
     private PauseTransition crawlButtonPause;
     private PauseTransition realtimeRefreshPause;
     private final List<String> workflowConsoleLines = new ArrayList<>();
+    private boolean realtimeDataRefreshPending;
+    private long lastEvaluationRebuildMillis;
     private Button themeToggleButton;
     private Button languageToggleButton;
     private Button closeNotificationButton;
@@ -1050,10 +1053,11 @@ public class MainApp extends Application {
                 }
                 workflowConsoleArea.positionCaret(workflowConsoleArea.getText().length());
             }
-            if (line.contains("Finished MANUAL workflow") || line.contains("Finished SCHEDULED workflow")) {
-                refreshWorkspaceHandleTable();
+            boolean dataChanged = isDataChangingWorkflowLine(line);
+            if (dataChanged) {
+                invalidateDataBackedScreens();
             }
-            requestRealtimeUiRefresh();
+            requestRealtimeUiRefresh(dataChanged);
         };
         if (javafx.application.Platform.isFxApplicationThread()) {
             update.run();
@@ -1073,7 +1077,38 @@ public class MainApp extends Application {
         }
     }
 
-    private void requestRealtimeUiRefresh() {
+    private boolean isDataChangingWorkflowLine(String line) {
+        return line.contains("Persisted remote_id=")
+                || line.contains("Updating source row")
+                || line.contains("Updating source crawl status")
+                || line.contains("Queued AI analysis job")
+                || line.contains("Saved AI result")
+                || line.contains("Crawled source_code_id=")
+                || line.contains("Persist summary for ")
+                || line.contains("Finished handle ")
+                || line.contains("Hoàn tất nick ")
+                || line.contains("Finished MANUAL workflow")
+                || line.contains("Finished SCHEDULED workflow")
+                || line.contains("Source retry finished")
+                || line.contains("Analysis stage finished")
+                || line.contains("Backend workflow finished");
+    }
+
+    private void invalidateDataBackedScreens() {
+        if (!"evaluation".equals(currentScreenId)) {
+            screenCacheById.remove("evaluation");
+        }
+        if (!"operations".equals(currentScreenId)) {
+            screenCacheById.remove("operations");
+            operationsRefreshAll = () -> { };
+        }
+        if (!"analysis".equals(currentScreenId) && aiReviewController == null) {
+            screenCacheById.remove("analysis");
+        }
+    }
+
+    private void requestRealtimeUiRefresh(boolean dataChanged) {
+        realtimeDataRefreshPending = realtimeDataRefreshPending || dataChanged;
         long now = System.currentTimeMillis();
         if (now - lastRealtimeRefreshMillis > 1500) {
             refreshRealtimeTargets();
@@ -1091,19 +1126,33 @@ public class MainApp extends Application {
     }
 
     private void refreshRealtimeTargets() {
-        if ("dashboard".equals(currentScreenId)) {
-            refreshWorkspaceHandleTable();
-            if (workspaceDashboardController != null) {
-                workspaceDashboardController.refreshDashboard();
-            }
-            return;
+        boolean dataChanged = realtimeDataRefreshPending;
+        realtimeDataRefreshPending = false;
+
+        refreshWorkspaceHandleTable();
+        if (workspaceDashboardController != null) {
+            workspaceDashboardController.refreshDashboard();
         }
-        if ("analysis".equals(currentScreenId) && aiReviewController != null) {
+
+        if (aiReviewController != null) {
             aiReviewController.refreshSourceList();
-            return;
         }
+
         if ("operations".equals(currentScreenId)) {
             operationsRefreshAll.run();
+        }
+
+        if ("evaluation".equals(currentScreenId) && dataChanged) {
+            long now = System.currentTimeMillis();
+            if (now - lastEvaluationRebuildMillis > 5000) {
+                lastEvaluationRebuildMillis = now;
+                ViewFactory factory = viewFactoriesByScreen.get("evaluation");
+                if (factory != null) {
+                    screenCacheById.remove("evaluation");
+                    showScreen("evaluation", factory.create(), false);
+                    updateActiveNavigation();
+                }
+            }
         }
     }
 
@@ -1383,7 +1432,7 @@ public class MainApp extends Application {
                     metrics,
                     stateBanner(t("analysis.banner.title"), t("analysis.banner.detail"), false),
                     controller.createView(),
-                    card(t("analysis.history"), table)
+                    card(t("analysis.history"), operationTableWithDetail(table, table, this::analysisDetail))
             );
         } catch (RuntimeException ex) {
             return screen(
@@ -1394,12 +1443,9 @@ public class MainApp extends Application {
     }
 
     private Node buildEvaluationReportView() {
-        ObservableList<SkillRow> rows = loadSkillRows();
-        if (hasText(focusedReportHandle)) {
-            rows = rows.stream()
-                    .filter(row -> focusedReportHandle.equalsIgnoreCase(row.handle()))
-                    .collect(FXCollections::observableArrayList, ObservableList::add, ObservableList::addAll);
-        }
+        ObservableList<SkillRow> allRows = loadSkillRows();
+        AtomicReference<SkillRow> selectedReportHandle = new AtomicReference<>(findReportHandle(allRows, focusedReportHandle));
+        ObservableList<SkillRow> rows = filteredSkillRows(allRows, selectedReportHandle.get());
         BarChart<String, Number> chart = skillChart(rows);
         TableView<SkillRow> table = table(
                 rows,
@@ -1424,58 +1470,98 @@ public class MainApp extends Application {
         TextField toField = new TextField(today.format(DATE_FORMATTER));
         ComboBox<String> formatCombo = combo("PDF", "Excel");
         CheckBox openAfterExport = new CheckBox(t("evaluation.filter.openFile"));
+        ComboBox<String> evaluatePlatformCombo = combo(t("evaluation.all"), "Codeforces", "VJudge");
+        ComboBox<String> evaluateHandleCombo = new ComboBox<>();
+        evaluateHandleCombo.setEditable(true);
+        evaluateHandleCombo.setPromptText(t("evaluation.handle.prompt"));
+        evaluateHandleCombo.setMinWidth(0);
+        evaluateHandleCombo.setMaxWidth(Double.MAX_VALUE);
+        evaluateHandleCombo.setVisibleRowCount(10);
 
-        addFormRow(filters, 0, t("evaluation.filter.reportType"), combo(t("evaluation.type.handle"), t("evaluation.type.class"), t("evaluation.type.aiRisk"), t("evaluation.type.crawlLog")));
-        addFormRow(filters, 1, t("evaluation.filter.platform"), combo(t("evaluation.all"), "Codeforces", "VJudge"));
-        addFormRow(filters, 2, t("evaluation.filter.group"), combo(t("evaluation.group.all"), "K17-CS", "K17-ACM", "K18-CS"));
-        addFormRow(filters, 3, t("evaluation.filter.from"), fromField);
-        addFormRow(filters, 4, t("evaluation.filter.to"), toField);
-        addFormRow(filters, 5, t("evaluation.filter.format"), formatCombo);
-        addFormRow(filters, 6, t("evaluation.filter.openFile"), openAfterExport);
+        addFormRow(filters, 0, t("evaluation.filter.platform"), evaluatePlatformCombo);
+        addFormRow(filters, 1, t("evaluation.filter.handle"), evaluateHandleCombo);
+        addFormRow(filters, 2, t("evaluation.filter.from"), fromField);
+        addFormRow(filters, 3, t("evaluation.filter.to"), toField);
+        addFormRow(filters, 4, t("evaluation.filter.format"), formatCombo);
+        addFormRow(filters, 5, t("evaluation.filter.openFile"), openAfterExport);
 
-        Button previewButton = new Button(t("action.preview"));
-        previewButton.getStyleClass().add("primary-button");
-        previewButton.setWrapText(true);
-        previewButton.setTooltip(fastTooltip(t("action.preview")));
-        previewButton.setAccessibleText(t("action.preview"));
+        Button evaluateButton = new Button(t("evaluation.action.evaluateSelected"));
+        evaluateButton.getStyleClass().add("primary-button");
+        Button clearHandleButton = new Button(t("evaluation.action.clearHandle"));
+        clearHandleButton.getStyleClass().add("secondary-button");
         Button exportButton = new Button(t("action.exportReport"));
         exportButton.getStyleClass().add("secondary-button");
-        exportButton.setOnAction(event -> exportReport(fromField, toField, formatCombo, openAfterExport));
+        exportButton.setOnAction(event -> exportReport(fromField, toField, formatCombo, openAfterExport, selectedReportHandle.get()));
         Button openFolderButton = new Button(t("action.openFolder"));
         openFolderButton.getStyleClass().add("secondary-button");
         openFolderButton.setOnAction(event -> openReportsFolder());
 
-        FlowPane actions = actionFlow(
-                previewButton,
+        refreshEvaluateHandleOptions(allRows, evaluatePlatformCombo, evaluateHandleCombo);
+        if (selectedReportHandle.get() != null) {
+            evaluatePlatformCombo.getSelectionModel().select(platformLabel(selectedReportHandle.get().platformCode()));
+            refreshEvaluateHandleOptions(allRows, evaluatePlatformCombo, evaluateHandleCombo);
+            evaluateHandleCombo.getEditor().setText(selectedReportHandle.get().handleName());
+        }
+        evaluatePlatformCombo.setOnAction(event -> refreshEvaluateHandleOptions(allRows, evaluatePlatformCombo, evaluateHandleCombo));
+
+        FlowPane scopeActions = actionFlow(
+                evaluateButton,
+                clearHandleButton
+        );
+        filters.add(scopeActions, 1, 6);
+
+        FlowPane exportActions = actionFlow(
                 exportButton,
                 openFolderButton
         );
-        filters.add(actions, 1, 7);
+        filters.add(exportActions, 1, 7);
 
         TableView<ReportRow> preview = table(
-                reportPreviewRows(),
+                reportPreviewRows(selectedReportHandle.get()),
                 column(t("report.section"), ReportRow::section, 180),
                 column(t("report.metric"), ReportRow::metric, 180),
                 column(t("report.value"), ReportRow::value, 130),
                 column(t("report.note"), ReportRow::note, 360)
         );
         preview.setPrefHeight(280);
-        previewButton.setOnAction(event -> {
-            showLoading();
-            preview.getItems().setAll(reportPreviewRows());
-            showNotification(t("notification.previewRefreshed"), true);
+        evaluateButton.setOnAction(event -> {
+            SkillRow selected = findReportHandle(
+                    allRows,
+                    evaluatePlatformCombo.getValue(),
+                    evaluateHandleCombo.getEditor().getText()
+            );
+            if (selected == null) {
+                showNotification(t("notification.handleFilterNotFound"), false);
+                return;
+            }
+            selectedReportHandle.set(selected);
+            focusedReportHandle = selected.handle();
+            rows.setAll(filteredSkillRows(allRows, selected));
+            refreshSkillChart(chart, rows);
+            preview.getItems().setAll(reportPreviewRows(selected));
+            showNotification(t("notification.handleFilterApplied", selected.handle()), true);
         });
-
+        clearHandleButton.setOnAction(event -> {
+            selectedReportHandle.set(null);
+            focusedReportHandle = null;
+            evaluatePlatformCombo.getSelectionModel().selectFirst();
+            refreshEvaluateHandleOptions(allRows, evaluatePlatformCombo, evaluateHandleCombo);
+            evaluateHandleCombo.getEditor().clear();
+            rows.setAll(allRows);
+            refreshSkillChart(chart, rows);
+            preview.getItems().setAll(reportPreviewRows(null));
+            showNotification(t("notification.handleFilterCleared"), true);
+        });
         List<Node> nodes = new ArrayList<>();
         nodes.add(sectionHeader(t("evaluation.title"), t("evaluation.subtitle")));
-        if (hasText(focusedReportHandle)) {
-            nodes.add(stateBanner("Report context", "Showing report data for " + focusedReportHandle + ". Use the Reports menu to return to the full report list.", false));
+        if (selectedReportHandle.get() != null) {
+            nodes.add(stateBanner(t("evaluation.context.title"), t("evaluation.context.detail", selectedReportHandle.get().handle()), false));
         }
         nodes.addAll(List.of(
                 stateBanner(t("evaluation.banner.title"), t("evaluation.banner.detail"), false),
                 split(card(t("evaluation.chart"), chart), card(t("evaluation.filters"), filters)),
-                card(t("evaluation.table"), table),
-                card(t("evaluation.preview"), preview)
+                card(t("evaluation.table"), operationTableWithDetail(table, table, this::skillDetail)),
+                card(t("evaluation.preview"), operationTableWithDetail(preview, preview, this::reportDetail))
         ));
         return screen(nodes.toArray(Node[]::new));
     }
@@ -1538,6 +1624,23 @@ public class MainApp extends Application {
         ));
         Button loadSubmissionsButton = secondaryButton("Apply filters");
         loadSubmissionsButton.setOnAction(event -> loadSubmissions.run());
+
+        for (Region filterControl : List.of(
+                handleFilter,
+                platformFilter,
+                verdictFilter,
+                languageFilter,
+                sourceStatusFilter,
+                fromFilter,
+                toFilter
+        )) {
+            filterControl.setMinWidth(132);
+            filterControl.setPrefWidth(156);
+            filterControl.setMaxWidth(190);
+        }
+        loadSubmissionsButton.setMinWidth(112);
+        loadSubmissionsButton.setPrefWidth(126);
+
         FlowPane submissionFilters = actionFlow(
                 handleFilter,
                 platformFilter,
@@ -1548,6 +1651,7 @@ public class MainApp extends Application {
                 toFilter,
                 loadSubmissionsButton
         );
+        submissionFilters.getStyleClass().add("submission-filter-row");
 
         ObservableList<OperationsRepository.SourceIssueRow> sourceIssueRows = FXCollections.observableArrayList();
         TableView<OperationsRepository.SourceIssueRow> sourceIssueTable = table(
@@ -1663,7 +1767,7 @@ public class MainApp extends Application {
                 sectionHeader("Operations Center", "Inspect database-backed runtime state: submissions, source issues, crawl logs, AI queue, settings, and errors."),
                 actionFlow(refreshAllButton),
                 card("Submission Explorer", operationTableWithDetail(
-                        new VBox(submissionFilters, submissionTable),
+                        operationTableContent(submissionFilters, submissionTable),
                         submissionTable,
                         row -> "Submission #" + row.submissionId()
                                 + "\nPlatform: " + row.platformCode()
@@ -1675,7 +1779,7 @@ public class MainApp extends Application {
                                 + "\nSource status: " + text(row.sourceCrawlStatus())
                                 + "\nLatest algorithms: " + text(row.latestAlgorithms()))),
                 card("Source Issues & Retry", operationTableWithDetail(
-                        new VBox(actionFlow(reloadIssuesButton, retrySourceButton), sourceIssueTable),
+                        operationTableContent(actionFlow(reloadIssuesButton, retrySourceButton), sourceIssueTable),
                         sourceIssueTable,
                         row -> "Source issue for submission #" + row.submissionId()
                                 + "\nSource code ID: " + text(row.sourceCodeId())
@@ -1767,8 +1871,17 @@ public class MainApp extends Application {
         detailScroll.setFitToWidth(true);
         detailScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         detailScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
-        detailScroll.setMinHeight(96);
-        detailScroll.setPrefHeight(126);
+        detailScroll.setMinHeight(42);
+        detailScroll.setMaxHeight(220);
+        detailScroll.prefHeightProperty().bind(javafx.beans.binding.Bindings.createDoubleBinding(
+                () -> {
+                    double width = Math.max(260, detailScroll.getWidth() - 24);
+                    double textHeight = detail.prefHeight(width) + 8;
+                    return Math.max(42, Math.min(220, textHeight));
+                },
+                detail.textProperty(),
+                detailScroll.widthProperty()
+        ));
         detailScroll.getStyleClass().add("operation-detail-scroll");
 
         table.getSelectionModel().selectedItemProperty().addListener((observable, oldValue, selected) -> {
@@ -1782,6 +1895,14 @@ public class MainApp extends Application {
 
         VBox box = new VBox(tableContent, detailScroll);
         box.setSpacing(12);
+        VBox.setVgrow(tableContent, Priority.ALWAYS);
+        return box;
+    }
+
+    private VBox operationTableContent(Node controls, Node tableContent) {
+        VBox box = new VBox(controls, tableContent);
+        box.setSpacing(16);
+        box.getStyleClass().add("operation-table-content");
         VBox.setVgrow(tableContent, Priority.ALWAYS);
         return box;
     }
@@ -2094,7 +2215,14 @@ public class MainApp extends Application {
         chart.setCategoryGap(10);
         chart.setBarGap(2);
         xAxis.setTickLabelRotation(-35);
+        chart.setMinHeight(280);
+        chart.setPrefHeight(320);
+        refreshSkillChart(chart, rows);
+        return chart;
+    }
 
+    private void refreshSkillChart(BarChart<String, Number> chart, ObservableList<SkillRow> rows) {
+        chart.getData().clear();
         XYChart.Series<String, Number> series = new XYChart.Series<>();
         rows.stream()
                 .limit(10)
@@ -2112,9 +2240,6 @@ public class MainApp extends Application {
             series.getData().add(new XYChart.Data<>(t("analysis.placeholder.title"), 0));
         }
         chart.getData().add(series);
-        chart.setMinHeight(280);
-        chart.setPrefHeight(320);
-        return chart;
     }
 
     private List<AiAnalysisResult> loadAnalyses() {
@@ -2181,6 +2306,9 @@ public class MainApp extends Application {
                 Platform platform = handle == null ? null : platformsById.get(handle.getPlatformId());
                 rows.add(new SkillRow(
                         String.valueOf(rank++),
+                        score.getHandleId(),
+                        platform == null ? "" : emptyAsDash(platform.getCode()),
+                        handle == null ? "" : emptyAsDash(handle.getHandle()),
                         displayHandle(platform, handle),
                         scoreText(score.getDataStructureScore()),
                         scoreText(score.getAlgorithmScore()),
@@ -2197,7 +2325,95 @@ public class MainApp extends Application {
         }
     }
 
-    private ObservableList<ReportRow> reportPreviewRows() {
+    private ObservableList<SkillRow> filteredSkillRows(ObservableList<SkillRow> allRows, SkillRow selected) {
+        if (selected == null) {
+            return FXCollections.observableArrayList(allRows);
+        }
+        return allRows.stream()
+                .filter(row -> Objects.equals(row.handleId(), selected.handleId()))
+                .collect(FXCollections::observableArrayList, ObservableList::add, ObservableList::addAll);
+    }
+
+    private SkillRow findReportHandle(ObservableList<SkillRow> rows, String displayHandle) {
+        if (!hasText(displayHandle)) {
+            return null;
+        }
+        return rows.stream()
+                .filter(row -> displayHandle.equalsIgnoreCase(row.handle()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private SkillRow findReportHandle(ObservableList<SkillRow> rows, String platformLabel, String handleText) {
+        if (!hasText(handleText)) {
+            return null;
+        }
+        String query = handleText.trim();
+        String platformCode = platformCodeFromLabel(platformLabel);
+        return rows.stream()
+                .filter(row -> "ALL".equals(platformCode) || platformCode.equalsIgnoreCase(row.platformCode()))
+                .filter(row -> query.equalsIgnoreCase(row.handleName()) || query.equalsIgnoreCase(row.handle()))
+                .findFirst()
+                .orElseGet(() -> rows.stream()
+                        .filter(row -> "ALL".equals(platformCode) || platformCode.equalsIgnoreCase(row.platformCode()))
+                        .filter(row -> row.handleName().toLowerCase().contains(query.toLowerCase())
+                                || row.handle().toLowerCase().contains(query.toLowerCase()))
+                        .findFirst()
+                        .orElse(null));
+    }
+
+    private void refreshEvaluateHandleOptions(
+            ObservableList<SkillRow> allRows,
+            ComboBox<String> platformCombo,
+            ComboBox<String> handleCombo
+    ) {
+        String platformCode = platformCodeFromLabel(platformCombo.getValue());
+        String currentText = handleCombo.getEditor().getText();
+        ObservableList<String> handles = allRows.stream()
+                .filter(row -> "ALL".equals(platformCode) || platformCode.equalsIgnoreCase(row.platformCode()))
+                .map(SkillRow::handle)
+                .sorted(String.CASE_INSENSITIVE_ORDER)
+                .collect(FXCollections::observableArrayList, ObservableList::add, ObservableList::addAll);
+        handleCombo.setItems(handles);
+        if (hasText(currentText)) {
+            handleCombo.getEditor().setText(currentText);
+        }
+    }
+
+    private String platformCodeFromLabel(String label) {
+        if (!hasText(label) || t("evaluation.all").equals(label)) {
+            return "ALL";
+        }
+        if ("VJudge".equalsIgnoreCase(label) || "VJUDGE".equalsIgnoreCase(label)) {
+            return "VJUDGE";
+        }
+        if ("Codeforces".equalsIgnoreCase(label) || "CODEFORCES".equalsIgnoreCase(label)) {
+            return "CODEFORCES";
+        }
+        return label.trim().toUpperCase();
+    }
+
+    private String platformLabel(String platformCode) {
+        if ("VJUDGE".equalsIgnoreCase(platformCode)) {
+            return "VJudge";
+        }
+        if ("CODEFORCES".equalsIgnoreCase(platformCode)) {
+            return "Codeforces";
+        }
+        return t("evaluation.all");
+    }
+
+    private ObservableList<ReportRow> reportPreviewRows(SkillRow selectedHandle) {
+        if (selectedHandle != null) {
+            return FXCollections.observableArrayList(
+                    new ReportRow(t("report.selectedHandle"), selectedHandle.handle(), selectedHandle.overall(), t("report.note.selectedHandle")),
+                    new ReportRow(t("report.selectedHandle"), t("table.structures"), selectedHandle.ds(), t("report.note.score")),
+                    new ReportRow(t("report.selectedHandle"), t("table.algorithms"), selectedHandle.algorithm(), t("report.note.score")),
+                    new ReportRow(t("report.selectedHandle"), t("table.quality"), selectedHandle.quality(), t("report.note.score")),
+                    new ReportRow(t("report.selectedHandle"), t("table.risk"), selectedHandle.risk(), t("report.note.risk")),
+                    new ReportRow(t("report.selectedHandle"), t("table.summary"), selectedHandle.summary(), t("report.note.summary"))
+            );
+        }
         try {
             var snapshot = applicationContext.dashboardService().loadDashboard();
             var summary = snapshot.summary();
@@ -2214,17 +2430,83 @@ public class MainApp extends Application {
         }
     }
 
+    private String analysisDetail(AnalysisRow row) {
+        return """
+                Submission #%s
+                Platform: %s
+                Handle: %s
+                Remote ID: %s
+                Problem: %s
+                Analyzer: %s
+                Data structures: %s
+                Algorithms: %s
+                AI risk: %s
+                Code score: %s
+                """.formatted(
+                row.submission(),
+                row.platform(),
+                row.handle(),
+                row.remoteId(),
+                row.problem(),
+                row.analyzer(),
+                row.structures(),
+                row.algorithms(),
+                row.risk(),
+                row.quality()
+        ).strip();
+    }
+
+    private String skillDetail(SkillRow row) {
+        return """
+                Rank #%s
+                Handle: %s
+                Data structures: %s
+                Algorithms: %s
+                Code score: %s
+                AI-use risk: %s
+                Overall: %s
+                Summary: %s
+                """.formatted(
+                row.rank(),
+                row.handle(),
+                row.ds(),
+                row.algorithm(),
+                row.quality(),
+                row.risk(),
+                row.overall(),
+                row.summary()
+        ).strip();
+    }
+
+    private String reportDetail(ReportRow row) {
+        return """
+                Section: %s
+                Metric: %s
+                Value: %s
+                Note: %s
+                """.formatted(
+                row.section(),
+                row.metric(),
+                row.value(),
+                row.note()
+        ).strip();
+    }
+
     private void exportReport(
             TextField fromField,
             TextField toField,
             ComboBox<String> formatCombo,
-            CheckBox openAfterExport
+            CheckBox openAfterExport,
+            SkillRow selectedHandle
     ) {
         try {
             showLoading();
             LocalDate from = LocalDate.parse(fromField.getText().trim(), DATE_FORMATTER);
             LocalDate to = LocalDate.parse(toField.getText().trim(), DATE_FORMATTER);
-            ReportRequest request = new ReportRequest(from, to, List.of(), openAfterExport.isSelected());
+            List<Long> handleIds = selectedHandle == null || selectedHandle.handleId() == null
+                    ? List.of()
+                    : List.of(selectedHandle.handleId());
+            ReportRequest request = new ReportRequest(from, to, handleIds, openAfterExport.isSelected());
             String format = formatCombo.getValue();
 
             Task<ReportExportResult> task = new Task<>() {
@@ -2463,7 +2745,19 @@ public class MainApp extends Application {
     ) {
     }
 
-    private record SkillRow(String rank, String handle, String ds, String algorithm, String quality, String risk, String overall, String summary) {
+    private record SkillRow(
+            String rank,
+            Long handleId,
+            String platformCode,
+            String handleName,
+            String handle,
+            String ds,
+            String algorithm,
+            String quality,
+            String risk,
+            String overall,
+            String summary
+    ) {
     }
 
     private record ReportRow(String section, String metric, String value, String note) {

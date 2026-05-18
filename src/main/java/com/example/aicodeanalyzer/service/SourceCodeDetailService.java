@@ -11,7 +11,7 @@ import java.util.Optional;
  * Provides source code details for the JavaFX source viewer screen.
  */
 public class SourceCodeDetailService {
-    private static final int DEFAULT_RECENT_LIMIT = 100;
+    private static final int DEFAULT_RECENT_LIMIT = 1000;
 
     private final SourceCodeDetailRepository sourceCodeDetailRepository;
 
@@ -43,5 +43,9 @@ public class SourceCodeDetailService {
 
     public Optional<SourceCodeDetail> findBySourceCodeId(long sourceCodeId) {
         return sourceCodeDetailRepository.findBySourceCodeId(sourceCodeId);
+    }
+
+    public Optional<SourceCodeDetail> findBySubmissionId(long submissionId) {
+        return sourceCodeDetailRepository.findBySubmissionId(submissionId);
     }
 }

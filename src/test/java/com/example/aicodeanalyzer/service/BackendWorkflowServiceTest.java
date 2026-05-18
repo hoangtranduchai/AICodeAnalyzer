@@ -90,7 +90,7 @@ class BackendWorkflowServiceTest {
     }
 
     @Test
-    void runOnceFallsBackToRuleBasedAnalysisWhenAiProviderRateLimitIsReached() {
+    void runOnceStopsAnalysisBatchWhenAiProviderRateLimitIsReached() {
         DatabaseConnectionFactory factory = RepositoryTestSupport.createFactoryWithSchema();
         Platform platform = RepositoryTestSupport.seedPlatform(factory);
         RepositoryTestSupport.seedHandle(factory, platform.getPlatformId(), "tourist");
@@ -127,10 +127,10 @@ class BackendWorkflowServiceTest {
 
         assertEquals(2, result.crawlLog().getTotalNewSubmissions());
         assertEquals(2, result.analysisQueueResult().pendingCount());
-        assertEquals(2, result.analysisQueueResult().analyzedCount());
-        assertEquals(0, result.analysisQueueResult().failedCount());
-        assertEquals(2, analyzer.callCount);
-        assertEquals(2, analysisRepository.findAll().size());
+        assertEquals(0, result.analysisQueueResult().analyzedCount());
+        assertEquals(1, result.analysisQueueResult().failedCount());
+        assertEquals(1, analyzer.callCount);
+        assertEquals(0, analysisRepository.findAll().size());
     }
 
     private AiAnalysisResult deterministicAnalysis(SourceCodeDetail sourceCodeDetail) {

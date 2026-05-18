@@ -12,8 +12,30 @@ public class UiLogbackAppender extends AppenderBase<ILoggingEvent> {
         if (eventObject == null) {
             return;
         }
-        UiLogBus.publish("LOG " + eventObject.getLevel()
-                + " " + eventObject.getLoggerName()
-                + " - " + eventObject.getFormattedMessage());
+        String message = eventObject.getFormattedMessage();
+        if (message == null || message.isBlank()) {
+            return;
+        }
+
+        ch.qos.logback.classic.Level level = eventObject.getLevel();
+        if (ch.qos.logback.classic.Level.ERROR.equals(level)) {
+            UiLogBus.publish("ERROR | " + shortLoggerName(eventObject.getLoggerName()) + " | " + message);
+            return;
+        }
+        if (ch.qos.logback.classic.Level.WARN.equals(level)) {
+            UiLogBus.publish("WARN | " + shortLoggerName(eventObject.getLoggerName()) + " | " + message);
+            return;
+        }
+        UiLogBus.publish("System | " + message);
+    }
+
+    private String shortLoggerName(String loggerName) {
+        if (loggerName == null || loggerName.isBlank()) {
+            return "Application";
+        }
+        int index = loggerName.lastIndexOf('.');
+        return index >= 0 && index + 1 < loggerName.length()
+                ? loggerName.substring(index + 1)
+                : loggerName;
     }
 }

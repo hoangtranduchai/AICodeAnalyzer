@@ -61,12 +61,16 @@ public class SourceCodeDetailController {
     private Label emptyStateLabel;
     private Label platformLabel;
     private Label handleLabel;
+    private Label submissionIdLabel;
+    private Label sourceCodeIdLabel;
     private Label remoteIdLabel;
     private Label problemLabel;
     private Label languageLabel;
     private Label verdictLabel;
     private Label submittedAtLabel;
+    private Label fetchedAtLabel;
     private Label sourceStatusLabel;
+    private Label sourceErrorLabel;
     private Label aiStatusLabel;
     private Label sourceStatsLabel;
     private TextArea sourceArea;
@@ -139,12 +143,12 @@ public class SourceCodeDetailController {
         prepareActionButton(skipButton);
         skipButton.setOnAction(event -> skipSelectedSource());
 
-        FlowPane toolbar = actionFlow(sourceSelector, filterComboBox, refreshButton, copyButton, analyzeButton, skipButton);
-        toolbar.setAlignment(Pos.CENTER_LEFT);
         sourceSelector.setPrefWidth(320);
-        sourceSelector.setMinWidth(220);
-        filterComboBox.setPrefWidth(180);
-        filterComboBox.setMinWidth(160);
+        sourceSelector.setMinWidth(0);
+        filterComboBox.setPrefWidth(190);
+        filterComboBox.setMinWidth(150);
+        FlowPane filterRow = actionFlow(filterComboBox, refreshButton);
+        FlowPane actionRow = actionFlow(copyButton, analyzeButton, skipButton);
 
         emptyStateLabel = new Label(t("source.empty"));
         emptyStateLabel.getStyleClass().add("empty-state");
@@ -152,7 +156,7 @@ public class SourceCodeDetailController {
         emptyStateLabel.setVisible(false);
         emptyStateLabel.setManaged(false);
 
-        VBox sourceListContent = new VBox(toolbar, emptyStateLabel, buildMetadataGrid());
+        VBox sourceListContent = new VBox(filterRow, sourceSelector, actionRow, emptyStateLabel, buildMetadataGrid());
         sourceListContent.setSpacing(12);
         VBox sourceListPanel = card(t("source.metadata.card"), sourceListContent);
         sourceListPanel.setMinWidth(320);
@@ -232,12 +236,16 @@ public class SourceCodeDetailController {
     private GridPane buildMetadataGrid() {
         platformLabel = readOnlyValue();
         handleLabel = readOnlyValue();
+        submissionIdLabel = readOnlyValue();
+        sourceCodeIdLabel = readOnlyValue();
         remoteIdLabel = readOnlyValue();
         problemLabel = readOnlyValue();
         languageLabel = readOnlyValue();
         verdictLabel = readOnlyValue();
         submittedAtLabel = readOnlyValue();
+        fetchedAtLabel = readOnlyValue();
         sourceStatusLabel = readOnlyValue();
+        sourceErrorLabel = readOnlyValue();
         aiStatusLabel = readOnlyValue();
         sourceStatsLabel = readOnlyValue();
 
@@ -248,14 +256,18 @@ public class SourceCodeDetailController {
 
         addReadOnlyRow(grid, 0, t("source.info.platform"), platformLabel);
         addReadOnlyRow(grid, 1, t("table.handle"), handleLabel);
-        addReadOnlyRow(grid, 2, t("source.info.remoteId"), remoteIdLabel);
-        addReadOnlyRow(grid, 3, t("source.info.problem"), problemLabel);
-        addReadOnlyRow(grid, 4, t("source.info.language"), languageLabel);
-        addReadOnlyRow(grid, 5, "Verdict", verdictLabel);
-        addReadOnlyRow(grid, 6, t("source.info.submittedAt"), submittedAtLabel);
-        addReadOnlyRow(grid, 7, t("source.info.sourceStatus"), sourceStatusLabel);
-        addReadOnlyRow(grid, 8, t("source.info.aiStatus"), aiStatusLabel);
-        addReadOnlyRow(grid, 9, t("source.info.size"), sourceStatsLabel);
+        addReadOnlyRow(grid, 2, t("source.info.submissionId"), submissionIdLabel);
+        addReadOnlyRow(grid, 3, t("source.info.sourceCodeId"), sourceCodeIdLabel);
+        addReadOnlyRow(grid, 4, t("source.info.remoteId"), remoteIdLabel);
+        addReadOnlyRow(grid, 5, t("source.info.problem"), problemLabel);
+        addReadOnlyRow(grid, 6, t("source.info.language"), languageLabel);
+        addReadOnlyRow(grid, 7, "Verdict", verdictLabel);
+        addReadOnlyRow(grid, 8, t("source.info.submittedAt"), submittedAtLabel);
+        addReadOnlyRow(grid, 9, t("source.info.fetchedAt"), fetchedAtLabel);
+        addReadOnlyRow(grid, 10, t("source.info.sourceStatus"), sourceStatusLabel);
+        addReadOnlyRow(grid, 11, t("source.info.sourceError"), sourceErrorLabel);
+        addReadOnlyRow(grid, 12, t("source.info.aiStatus"), aiStatusLabel);
+        addReadOnlyRow(grid, 13, t("source.info.size"), sourceStatsLabel);
         return grid;
     }
 
@@ -366,12 +378,16 @@ public class SourceCodeDetailController {
         if (!hasDetail) {
             platformLabel.setText("-");
             handleLabel.setText("-");
+            submissionIdLabel.setText("-");
+            sourceCodeIdLabel.setText("-");
             remoteIdLabel.setText("-");
             problemLabel.setText("-");
             languageLabel.setText("-");
             verdictLabel.setText("-");
             submittedAtLabel.setText("-");
+            fetchedAtLabel.setText("-");
             sourceStatusLabel.setText("-");
+            sourceErrorLabel.setText("-");
             aiStatusLabel.setText("-");
             sourceStatsLabel.setText("-");
             sourceArea.clear();
@@ -385,12 +401,16 @@ public class SourceCodeDetailController {
                 : t("source.button.reanalyze"));
         platformLabel.setText(valueOrDash(detail.platformName()));
         handleLabel.setText(valueOrDash(detail.handle()));
+        submissionIdLabel.setText(detail.submissionId() == null ? "-" : String.valueOf(detail.submissionId()));
+        sourceCodeIdLabel.setText(detail.sourceCodeId() == null ? "-" : String.valueOf(detail.sourceCodeId()));
         remoteIdLabel.setText(valueOrDash(detail.remoteId()));
         problemLabel.setText(detail.problemDisplay());
         languageLabel.setText(valueOrDash(detail.language()));
         verdictLabel.setText(valueOrDash(detail.verdict()));
         submittedAtLabel.setText(detail.submittedAt() == null ? "-" : DATE_TIME_FORMATTER.format(detail.submittedAt()));
+        fetchedAtLabel.setText(detail.fetchedAt() == null ? "-" : DATE_TIME_FORMATTER.format(detail.fetchedAt()));
         sourceStatusLabel.setText(formatSourceStatus(detail));
+        sourceErrorLabel.setText(valueOrDash(detail.sourceCrawlError()));
         aiStatusLabel.setText(formatAiStatus(detail));
         sourceStatsLabel.setText(formatSourceStats(detail));
         analysisArea.setText(formatAnalysis(detail.latestAnalysis()));
@@ -404,14 +424,33 @@ public class SourceCodeDetailController {
             return;
         }
 
-        sourceArea.setText(detail.codeContent() == null ? "" : detail.codeContent());
+        if (!hasText(detail.codeContent())) {
+            sourceArea.setText(sourceContentUnavailableMessage(detail));
+            copyButton.setDisable(true);
+            analyzeButton.setDisable(true);
+            return;
+        }
+
+        sourceArea.setText(detail.codeContent());
         sourceArea.positionCaret(0);
     }
 
     private boolean shouldLoadSourceContent(SourceCodeDetail detail) {
         return detail.sourceCodeId() != null
                 && !loadedSourceCodeIds.contains(detail.sourceCodeId())
-                && detail.codeContent() == null;
+                && !hasText(detail.codeContent());
+    }
+
+    private String sourceContentUnavailableMessage(SourceCodeDetail detail) {
+        if (detail == null) {
+            return t("source.source.prompt");
+        }
+        String status = valueOrDash(detail.sourceCrawlStatus());
+        String error = valueOrDash(detail.sourceCrawlError());
+        if (!"-".equals(error)) {
+            return t("source.error.emptyContentWithReason", status, error);
+        }
+        return t("source.error.emptyContent", status);
     }
 
     private void loadSourceContent(long sourceCodeId) {
@@ -425,24 +464,56 @@ public class SourceCodeDetailController {
 
         task.setOnSucceeded(event -> {
             SourceCodeDetail loadedDetail = task.getValue();
-            loadedSourceCodeIds.add(sourceCodeId);
+            if (hasText(loadedDetail.codeContent())) {
+                loadedSourceCodeIds.add(sourceCodeId);
+            }
             replaceSourceCode(loadedDetail);
+            replaceSourceCodeInAll(loadedDetail);
             if (currentDetail != null && Objects.equals(currentDetail.sourceCodeId(), sourceCodeId)) {
-                sourceSelector.getSelectionModel().select(loadedDetail);
-                applyDetail(loadedDetail);
+                selectAndApplyDetail(loadedDetail);
             }
         });
 
         task.setOnFailed(event -> {
-            loadedSourceCodeIds.add(sourceCodeId);
             if (currentDetail != null && Objects.equals(currentDetail.sourceCodeId(), sourceCodeId)) {
-                sourceArea.setText("");
+                sourceArea.setText(t("source.error.load"));
             }
             Throwable exception = task.getException();
             notify(exception == null ? t("source.error.load") : exception.getMessage(), false);
         });
 
         Thread thread = new Thread(task, "source-code-detail-load");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void reloadSubmissionDetail(long submissionId) {
+        Task<SourceCodeDetail> task = new Task<>() {
+            @Override
+            protected SourceCodeDetail call() {
+                return sourceCodeDetailService.findBySubmissionId(submissionId)
+                        .orElseThrow(() -> new IllegalStateException(t("source.error.load")));
+            }
+        };
+
+        task.setOnSucceeded(event -> {
+            SourceCodeDetail loadedDetail = task.getValue();
+            replaceSourceCode(loadedDetail);
+            replaceSourceCodeInAll(loadedDetail);
+            if (currentDetail != null && Objects.equals(currentDetail.submissionId(), submissionId)) {
+                selectAndApplyDetail(loadedDetail);
+            }
+        });
+
+        task.setOnFailed(event -> {
+            if (currentDetail != null && Objects.equals(currentDetail.submissionId(), submissionId)) {
+                sourceArea.setText(t("source.error.load"));
+            }
+            Throwable exception = task.getException();
+            notify(exception == null ? t("source.error.load") : exception.getMessage(), false);
+        });
+
+        Thread thread = new Thread(task, "source-submission-detail-load");
         thread.setDaemon(true);
         thread.start();
     }
@@ -513,7 +584,7 @@ public class SourceCodeDetailController {
     private void replaceSourceCode(SourceCodeDetail updatedDetail) {
         for (int i = 0; i < sourceCodes.size(); i++) {
             SourceCodeDetail item = sourceCodes.get(i);
-            if (Objects.equals(item.sourceCodeId(), updatedDetail.sourceCodeId())) {
+            if (sameSubmissionDetail(item, updatedDetail)) {
                 sourceCodes.set(i, updatedDetail);
                 return;
             }
@@ -524,12 +595,22 @@ public class SourceCodeDetailController {
     private void replaceSourceCodeInAll(SourceCodeDetail updatedDetail) {
         for (int i = 0; i < allSourceCodes.size(); i++) {
             SourceCodeDetail item = allSourceCodes.get(i);
-            if (Objects.equals(item.sourceCodeId(), updatedDetail.sourceCodeId())) {
+            if (sameSubmissionDetail(item, updatedDetail)) {
                 allSourceCodes.set(i, updatedDetail);
                 return;
             }
         }
         allSourceCodes.add(0, updatedDetail);
+    }
+
+    private boolean sameSubmissionDetail(SourceCodeDetail left, SourceCodeDetail right) {
+        if (left == null || right == null) {
+            return false;
+        }
+        if (left.sourceCodeId() != null && right.sourceCodeId() != null) {
+            return Objects.equals(left.sourceCodeId(), right.sourceCodeId());
+        }
+        return Objects.equals(left.submissionId(), right.submissionId());
     }
 
     private void applySourceFilter(boolean selectFirst) {
@@ -539,7 +620,7 @@ public class SourceCodeDetailController {
         AnalysisFilter filter = filterComboBox == null || filterComboBox.getValue() == null
                 ? AnalysisFilter.ALL
                 : filterComboBox.getValue();
-        Long selectedSourceCodeId = currentDetail == null ? null : currentDetail.sourceCodeId();
+        Long selectedSubmissionId = currentDetail == null ? null : currentDetail.submissionId();
         List<SourceCodeDetail> filtered = allSourceCodes.stream()
                 .filter(detail -> matchesFilter(detail, filter))
                 .toList();
@@ -551,15 +632,27 @@ public class SourceCodeDetailController {
             return;
         }
 
-        if (!selectFirst && selectedSourceCodeId != null) {
+        if (!selectFirst && selectedSubmissionId != null) {
             for (SourceCodeDetail detail : sourceCodes) {
-                if (Objects.equals(detail.sourceCodeId(), selectedSourceCodeId)) {
-                    sourceSelector.getSelectionModel().select(detail);
+                if (Objects.equals(detail.submissionId(), selectedSubmissionId)) {
+                    selectAndApplyDetail(detail);
                     return;
                 }
             }
         }
-        sourceSelector.getSelectionModel().selectFirst();
+        selectAndApplyDetail(sourceCodes.getFirst());
+    }
+
+    private void selectAndApplyDetail(SourceCodeDetail detail) {
+        if (detail == null) {
+            applyDetail(null);
+            return;
+        }
+        SourceCodeDetail selected = sourceSelector.getSelectionModel().getSelectedItem();
+        sourceSelector.getSelectionModel().select(detail);
+        if (Objects.equals(selected, detail)) {
+            applyDetail(detail);
+        }
     }
 
     private boolean matchesFilter(SourceCodeDetail detail, AnalysisFilter filter) {
@@ -805,7 +898,10 @@ public class SourceCodeDetailController {
                 if (detail == null) {
                     return "";
                 }
-                return detail.displayLabel() + " #" + detail.sourceCodeId();
+                String sourceMarker = detail.sourceCodeId() == null
+                        ? t("source.status.noSourceRow")
+                        : "source #" + detail.sourceCodeId();
+                return detail.displayLabel() + " / submission #" + detail.submissionId() + " / " + sourceMarker;
             }
 
             @Override

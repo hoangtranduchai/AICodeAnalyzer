@@ -220,10 +220,13 @@ public class HandleController {
                 column(t("table.handle"), HandleAccount::getHandle, 190),
                 column(t("table.lastCrawl"), handle -> handle.getLastCrawledAt() == null
                         ? "-"
-                        : DATE_TIME_FORMATTER.format(handle.getLastCrawledAt()), 135),
+                        : DATE_TIME_FORMATTER.format(handle.getLastCrawledAt()), 150),
                 column(t("table.newSubmissions"), handle -> String.valueOf(pipelineStat(handle).lastNewSubmissions()), 72),
+                column(t("table.totalSubmissions"), handle -> String.valueOf(pipelineStat(handle).totalSubmissions()), 108),
+                column(t("table.crawledSources"), handle -> String.valueOf(pipelineStat(handle).crawledSources()), 118),
+                column(t("table.missingSources"), handle -> String.valueOf(pipelineStat(handle).missingSources()), 118),
                 column(t("table.pendingAi"), handle -> String.valueOf(pipelineStat(handle).pendingAi()), 92),
-                column(t("table.sourceIssues"), handle -> String.valueOf(pipelineStat(handle).sourceIssues()), 82),
+                column(t("table.sourceIssues"), handle -> String.valueOf(pipelineStat(handle).sourceIssues()), 100),
                 column(t("table.status"), this::handleStatusText, 160),
                 actionColumn()
         ));
@@ -702,7 +705,7 @@ public class HandleController {
     }
 
     private HandlePipelineStats emptyPipelineStats() {
-        return new HandlePipelineStats(0, 0, 0, 0, 0, "-");
+        return new HandlePipelineStats(0, 0, 0, 0, 0, 0, 0, "-");
     }
 
     private void loadPipelineStats() {

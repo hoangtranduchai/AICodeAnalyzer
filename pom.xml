@@ -137,7 +137,6 @@
                 <version>${javafx.maven.plugin.version}</version>
                 <configuration>
                     <mainClass>com.example.aicodeanalyzer.app.DesktopLauncher</mainClass>
-                    <runtimePathOption>CLASSPATH</runtimePathOption>
                 </configuration>
             </plugin>
 

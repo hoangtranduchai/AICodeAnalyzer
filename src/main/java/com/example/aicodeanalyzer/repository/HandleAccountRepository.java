@@ -94,6 +94,24 @@ public class HandleAccountRepository extends JdbcRepositorySupport {
                 SELECT h.handle_id,
                        COUNT(s.submission_id) AS total_submissions,
                        SUM(CASE
+                               WHEN s.source_crawl_status = 'CRAWLED'
+                                AND sc.source_code_id IS NOT NULL
+                                AND sc.code_content IS NOT NULL
+                                AND LEN(sc.code_content) > 0
+                               THEN 1 ELSE 0
+                           END) AS crawled_sources,
+                       SUM(CASE
+                               WHEN s.submission_id IS NOT NULL
+                                AND (
+                                    s.source_crawl_status IS NULL
+                                    OR s.source_crawl_status <> 'CRAWLED'
+                                    OR sc.source_code_id IS NULL
+                                    OR sc.code_content IS NULL
+                                    OR LEN(sc.code_content) = 0
+                                )
+                               THEN 1 ELSE 0
+                           END) AS missing_sources,
+                       SUM(CASE
                                WHEN sc.source_code_id IS NOT NULL
                                 AND sc.code_content IS NOT NULL
                                 AND COALESCE(analysis.analysis_count, 0) = 0
@@ -118,6 +136,8 @@ public class HandleAccountRepository extends JdbcRepositorySupport {
                 stats.add(new HandlePipelineStats(
                         resultSet.getLong("handle_id"),
                         resultSet.getLong("total_submissions"),
+                        resultSet.getLong("crawled_sources"),
+                        resultSet.getLong("missing_sources"),
                         resultSet.getLong("pending_ai"),
                         resultSet.getLong("source_issues"),
                         resultSet.getLong("last_new_submissions"),
@@ -332,6 +352,8 @@ public class HandleAccountRepository extends JdbcRepositorySupport {
     public record HandlePipelineStats(
             long handleId,
             long totalSubmissions,
+            long crawledSources,
+            long missingSources,
             long pendingAi,
             long sourceIssues,
             long lastNewSubmissions,

@@ -138,10 +138,10 @@ public class AnalysisService {
             return codeAnalyzer.analyze(sourceCodeDetail);
         } catch (AiRateLimitException ex) {
             LOGGER.warn(
-                    "AI provider quota/rate limit reached for source_code_id={}. Falling back to rule-based analyzer.",
+                    "AI provider quota/rate limit reached for source_code_id={}. Marking analysis job as quota-delayed; no rule-based fallback will be saved as an AI result.",
                     sourceCodeDetail.sourceCodeId()
             );
-            return analyzeWithRuleBased(new RuleBasedCodeAnalyzer(), sourceCodeDetail);
+            throw ex;
         }
     }
 
@@ -248,12 +248,27 @@ public class AnalysisService {
 
     private static CodeAnalyzer createDefaultAnalyzer() {
         AiConfig aiConfig = AiConfig.load();
-        if ("rule-based".equalsIgnoreCase(aiConfig.provider()) || aiConfig.useMockMode()) {
+        if ("rule-based".equalsIgnoreCase(aiConfig.provider())) {
+            LOGGER.info("Using rule-based analyzer because ai.provider=rule-based.");
+            return new RuleBasedCodeAnalyzer();
+        }
+        if (aiConfig.useMockMode()) {
+            LOGGER.warn(
+                    "Using rule-based analyzer because Gemini/OpenAI API is not active. mockMode={}, hasApiKey={}, provider={}, model={}.",
+                    aiConfig.mockMode(),
+                    aiConfig.hasApiKey(),
+                    aiConfig.provider(),
+                    aiConfig.model()
+            );
             return new RuleBasedCodeAnalyzer();
         }
         if (aiConfig.isGeminiProvider()) {
+            LOGGER.info("Using Gemini API analyzer. provider={}, model={}, endpoint={}.",
+                    aiConfig.provider(), aiConfig.model(), aiConfig.endpoint());
             return new GeminiCodeAnalyzer(new GeminiAnalyzerService(aiConfig));
         }
+        LOGGER.info("Using OpenAI-compatible API analyzer. provider={}, model={}, endpoint={}.",
+                aiConfig.provider(), aiConfig.model(), aiConfig.endpoint());
         return new OpenAiCodeAnalyzer(new OpenAIAnalyzerService(aiConfig));
     }
 }

@@ -68,6 +68,20 @@ public class SourceCodeDetailRepository extends JdbcRepositorySupport {
         }
     }
 
+    public Optional<SourceCodeDetail> findBySubmissionId(long submissionId) {
+        String sql = selectSourceCodeDetailSql(true) + "WHERE s.submission_id = ?";
+
+        try (Connection connection = connectionFactory.createConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, submissionId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? Optional.of(mapRow(resultSet)) : Optional.empty();
+            }
+        } catch (SQLException ex) {
+            throw databaseException("loading submission detail", ex);
+        }
+    }
+
     public List<SourceCodeDetail> findRecentByHandle(String platformCode, String handle, int limit) {
         String sql = selectSourceCodeDetailSql(true) + """
                 WHERE p.code = ? AND h.handle = ?
@@ -96,7 +110,7 @@ public class SourceCodeDetailRepository extends JdbcRepositorySupport {
         String codeContentExpression = includeCodeContent ? "sc.code_content" : "NULL";
         return """
                 SELECT sc.source_code_id,
-                       sc.submission_id,
+                       s.submission_id,
                        %s AS code_content,
                        sc.code_hash,
                        sc.line_count,
@@ -129,23 +143,25 @@ public class SourceCodeDetailRepository extends JdbcRepositorySupport {
                        ar.created_at AS analysis_created_at,
                       ar.updated_at AS analysis_updated_at,
                       aj.status AS analysis_job_status
-                FROM dbo.source_codes sc
-                JOIN dbo.submissions s ON s.submission_id = sc.submission_id
+                FROM dbo.submissions s
+                LEFT JOIN dbo.source_codes sc ON sc.submission_id = s.submission_id
                 JOIN dbo.programming_handles h ON h.handle_id = s.handle_id
                 JOIN dbo.platforms p ON p.platform_id = h.platform_id
-                  LEFT JOIN dbo.analysis_jobs aj ON aj.source_code_id = sc.source_code_id
+                LEFT JOIN dbo.analysis_jobs aj ON aj.source_code_id = sc.source_code_id
                 LEFT JOIN dbo.ai_analysis_results ar ON ar.analysis_id = (
                     SELECT TOP 1 latest.analysis_id
                     FROM dbo.ai_analysis_results latest
-                    WHERE latest.submission_id = sc.submission_id
+                    WHERE latest.submission_id = s.submission_id
                     ORDER BY latest.created_at DESC, latest.analysis_id DESC
                 )
                 """.formatted(codeContentExpression);
     }
 
     private SourceCodeDetail mapRow(ResultSet resultSet) throws SQLException {
+        long sourceCodeId = resultSet.getLong("source_code_id");
+        Long nullableSourceCodeId = resultSet.wasNull() ? null : sourceCodeId;
         return new SourceCodeDetail(
-                resultSet.getLong("source_code_id"),
+                nullableSourceCodeId,
                 resultSet.getLong("submission_id"),
                 resultSet.getString("platform_code"),
                 resultSet.getString("platform_name"),

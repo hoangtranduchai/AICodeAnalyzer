@@ -39,9 +39,15 @@ public class PlaywrightCdpSourceFetcher implements SourceFetcher, AutoCloseable 
     private static final String VJUDGE_SELECTOR = "pre.prettyprint";
     private static final String VJUDGE_READY_SELECTOR = String.join(", ",
             "pre.prettyprint",
+            ".prettyprint",
+            "ol.linenums",
+            ".linenums",
             "#code-content",
             "#code-panel pre code",
             "#code-panel pre",
+            "#source",
+            ".source",
+            ".source-code",
             "#code-panel img[src*='solution/snapshot']",
             "img[src*='solution/snapshot']",
             "#code-panel .alert-danger"
@@ -389,11 +395,7 @@ public class PlaywrightCdpSourceFetcher implements SourceFetcher, AutoCloseable 
             }
 
             SourceFetchResult dataEndpointResult = fetchVjudgeSourceFromDataEndpoint(page, sourceUrl, effectiveTimeout);
-            if (dataEndpointResult.hasSourceCode()
-                    || dataEndpointResult.availability() == SourceAvailability.OCR_REQUIRED
-                    || dataEndpointResult.availability() == SourceAvailability.OCR_FAILED
-                    || dataEndpointResult.availability() == SourceAvailability.PERMISSION_DENIED
-                    || dataEndpointResult.availability() == SourceAvailability.LOGIN_REQUIRED) {
+            if (dataEndpointResult.hasSourceCode()) {
                 return dataEndpointResult;
             }
 
@@ -401,9 +403,17 @@ public class PlaywrightCdpSourceFetcher implements SourceFetcher, AutoCloseable 
             String textSource = readFirstAvailableSourceText(
                     page,
                     VJUDGE_SELECTOR,
+                    ".prettyprint",
+                    "ol.linenums",
+                    ".linenums",
                     "#code-content",
                     "#code-panel pre code",
-                    "#code-panel pre"
+                    "#code-panel pre",
+                    "#source",
+                    ".source-code pre",
+                    ".source-code",
+                    ".source pre",
+                    ".source"
             );
             if (hasText(textSource)) {
                 return SourceFetchResult.available(SourceOrigin.VJUDGE_AUTHORIZED_HTML, textSource);
@@ -412,6 +422,10 @@ public class PlaywrightCdpSourceFetcher implements SourceFetcher, AutoCloseable 
             String snapshotUrl = firstAttribute(page, "img[src*='solution/snapshot'], img[src*='snapshot']", "src");
             if (hasText(snapshotUrl)) {
                 return ocrVjudgeSnapshot(page, snapshotUrl, effectiveTimeout);
+            }
+
+            if (dataEndpointResult.availability() != SourceAvailability.SOURCE_NOT_AVAILABLE) {
+                return dataEndpointResult;
             }
 
             return SourceFetchResult.unavailable(
