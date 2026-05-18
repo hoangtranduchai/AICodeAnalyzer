@@ -1,245 +1,143 @@
-# RELEASE CHECKLIST - AI Code Analyzer Desktop
+# Release Checklist
 
-Checklist này dùng để kiểm tra trước khi bàn giao, demo hoặc nộp đồ án. Mỗi mục nên được tick sau khi đã kiểm chứng thực tế, không chỉ dựa trên giả định.
+Use this checklist before a classroom demo, project handoff, tagged release, or final submission.
 
-## 1. Thông tin bản bàn giao
+## Version
 
-| Mục | Nội dung |
-|---|---|
-| Tên dự án | AI Code Analyzer Desktop |
-| Phiên bản bàn giao | |
-| Ngày kiểm tra | |
-| Người kiểm tra | |
-| Môi trường kiểm tra | Windows, JDK 17/21, Maven, SQL Server |
-| Ghi chú | |
+- Project version in `pom.xml` is correct.
+- `CHANGELOG.md` has an entry for the release.
+- Documentation reflects current behavior.
+- Generated artifacts from old builds are not confused with the new release.
 
-## 2. Build và chạy ứng dụng
+## Build
 
-- [ ] Chạy `mvn clean package` thành công.
-- [ ] Chạy `mvn javafx:run` mở được ứng dụng.
-- [ ] Không có lỗi dependency Maven.
-- [ ] Không có lỗi JavaFX runtime/module khi khởi động.
-- [ ] Ứng dụng hiển thị được màn hình chính và sidebar.
-
-Minh chứng cần lưu:
-
-- Log build thành công.
-- Ảnh màn hình ứng dụng mở thành công nếu cần.
-
-## 3. Test
-
-- [ ] Unit test chạy thành công.
-- [ ] Integration test quan trọng chạy thành công.
-- [ ] Repository test kiểm tra CRUD cơ bản.
-- [ ] Analyzer test không gọi API thật.
-- [ ] Crawler test dùng mock HTTP response.
-- [ ] Scheduler test kiểm tra không chạy song song job crawl.
-- [ ] Report export test tạo được file đầu ra.
-
-Lệnh gợi ý:
+Run:
 
 ```powershell
-mvn test
+mvn clean test
+mvn clean package
 ```
 
-Minh chứng cần lưu:
+Confirm:
 
-- Kết quả test pass.
-- Danh sách test fail nếu còn tồn tại và lý do chấp nhận nếu có.
+- Tests pass.
+- Shaded JAR is created under `target/`.
+- Application starts from the JAR.
 
-## 4. Database
+## Database
 
-- [ ] Script tạo database chạy được trên SQL Server Management Studio.
-- [ ] Script tạo bảng chạy không lỗi.
-- [ ] Primary key, foreign key và unique constraint hoạt động đúng.
-- [ ] Unique constraint `platform + handle` hoạt động đúng.
-- [ ] Unique constraint `platform + remote_submission_id` hoặc logic chống trùng submission hoạt động đúng.
-- [ ] Index cần thiết đã được tạo.
-- [ ] Có bảng `crawl_logs`.
-- [ ] Có bảng `ai_analysis_results`.
-- [ ] Có bảng `user_skill_scores`.
-- [ ] Dữ liệu demo insert được thành công.
-- [ ] Ứng dụng kết nối được tới database demo.
+Confirm:
 
-Minh chứng cần lưu:
+- `sql/ai-code-analyzer-complete.sql` is the canonical SQL file.
+- A clean SQL Server database can be created from the script.
+- Demo data exists if the release/demo requires it.
+- Indexes and constraints are present.
 
-- File schema SQL.
-- File insert dữ liệu demo.
-- Ảnh hoặc log chạy script thành công.
+## Configuration
 
-## 5. Bảo mật cấu hình
+Confirm:
 
-- [ ] Không commit `src/main/resources/application.properties` chứa thông tin thật.
-- [ ] Có `application.properties.example` để hướng dẫn cấu hình.
-- [ ] Không hard-code OpenAI API key trong source code.
-- [ ] Không hard-code password database trong source code.
-- [ ] Không commit file `.env` chứa secret thật.
-- [ ] `.gitignore` đã loại trừ `application.properties`, `.env`, logs, reports và file database local.
-- [ ] Log không in API key.
-- [ ] Log không in password database.
-- [ ] Log không in toàn bộ source code nhạy cảm.
-- [ ] README/INSTALLATION hướng dẫn dùng biến môi trường cho secret.
+- `application.properties.example` is current.
+- Local `application.properties` is not committed.
+- `.env` is not committed.
+- `DB_PASSWORD` is configured.
+- AI mode is intentionally selected: real provider, mock, or rule-based.
 
-Kiểm tra nhanh:
+## Crawler
 
-```powershell
-rg -n "sk-|OPENAI_API_KEY|password=|db.password|api.key" .
-```
+Confirm:
 
-Lưu ý: nếu kết quả chỉ xuất hiện trong file mẫu hoặc tài liệu hướng dẫn dạng placeholder thì có thể chấp nhận. Nếu xuất hiện secret thật, phải xóa trước khi bàn giao.
+- Chrome bot starts.
+- DevTools endpoint responds.
+- Codeforces metadata crawl works.
+- VJudge status crawl works.
+- Source unavailable states are displayed clearly.
+- Captcha and permission boundaries are respected.
 
-## 6. Crawler trực tiếp web
+## AI Analysis
 
-- [ ] Codeforces crawler dùng endpoint công khai và đọc source từ trang submission.
-- [ ] VJudge crawl trực tiếp qua Chrome debug session, không import file.
-- [ ] Có rate limit khi gọi nguồn dữ liệu bên ngoài.
-- [ ] Có retry giới hạn, ví dụ tối đa 3 lần.
-- [ ] Có xử lý lỗi từng handle, không làm dừng toàn bộ job.
-- [ ] Nếu không lấy được source code hợp lệ thì lưu metadata và đánh dấu `SOURCE_NOT_AVAILABLE`.
-- [ ] Có ghi log kết quả crawl vào `crawl_logs`.
-- [ ] Có thống kê `new_count`, `updated_count`, `skipped_count`, `failed_count`.
-- [ ] Có cảnh báo người dùng chỉ crawl dữ liệu công khai hoặc có quyền truy cập hợp lệ.
+Confirm:
 
-Minh chứng cần lưu:
+- Rule-based analyzer works offline.
+- Mock mode works for demo fallback.
+- Real AI provider works if enabled.
+- Rate limit handling is acceptable.
+- AI-risk output is not accusatory.
 
-- Log một lần crawl trực tiếp thành công.
-- Log một trường hợp lỗi được xử lý an toàn.
+## Reports
 
-## 7. AI Analyzer
+Confirm:
 
-- [ ] OpenAI analyzer đọc API key từ biến môi trường hoặc cấu hình ngoài source code.
-- [ ] Không log API key.
-- [ ] Có timeout khi gọi API.
-- [ ] Có retry khi lỗi mạng.
-- [ ] Có mock mode hoặc test mode để không gọi API thật khi test.
-- [ ] Có fallback `RuleBasedCodeAnalyzer` khi không có API key.
-- [ ] Kết quả trả về đúng JSON schema đã thiết kế.
-- [ ] Với source code quá ngắn, confidence giảm hợp lý.
-- [ ] Kết quả AI usage chỉ ghi là xác suất/dấu hiệu cần kiểm chứng thêm, không kết luận chắc chắn.
+- PDF export works.
+- Excel export works.
+- Reports open successfully.
+- Output is stored under `reports/`.
+- Report content matches the selected handles and analysis data.
 
-Minh chứng cần lưu:
+## UI
 
-- Ảnh hoặc log phân tích một source code thành công.
-- Ảnh hoặc log fallback heuristic hoạt động khi không có API key.
+Confirm:
 
-## 8. UI và trải nghiệm người dùng
+- Main shell opens.
+- Dashboard loads.
+- Handle management works.
+- Source detail screen works.
+- Settings screen works.
+- Language resources load.
+- Long errors are readable and not catastrophic.
 
-- [ ] Màn hình Bat dau hiển thị hướng dẫn rõ ràng cho người mới.
-- [ ] Nhập nick Codeforces/VJudge và crawl trực tiếp hoạt động.
-- [ ] Bảng kết quả crawl và danh sách nick hiển thị đúng.
-- [ ] Màn hình Phan tich xử lý source code dài.
-- [ ] Nút copy source code hoạt động.
-- [ ] Nút gửi phân tích AI hoạt động hoặc báo lỗi thân thiện.
-- [ ] Màn hình Danh gia & Bao cao hiển thị preview và bảng điểm.
-- [ ] Màn hình Cai dat bật/tắt auto crawl và lưu lịch.
-- [ ] UI không crash khi bảng không có dòng nào.
-- [ ] Thông báo lỗi/thành công rõ ràng cho người dùng.
+## Security
 
-Minh chứng cần lưu:
+Confirm:
 
-- Ảnh màn hình Bat dau.
-- Ảnh màn hình Phan tich.
-- Ảnh màn hình Danh gia & Bao cao.
-- Ảnh màn hình Cai dat hoặc file report đã xuất.
+- No real secrets in Git.
+- No cookies or tokens in logs.
+- Browser bot uses an isolated profile.
+- Reports are reviewed before sharing.
+- Security notes are included in handoff.
 
-## 9. Scheduler
+## Documentation
 
-- [ ] ScheduledExecutorService daily workflow chạy được theo lịch.
-- [ ] Có thể cấu hình giờ chạy hằng ngày trong UI.
-- [ ] Có thể bật/tắt auto crawl.
-- [ ] Crawl thủ công chạy từ màn hình Bat dau.
-- [ ] Không chạy song song hai job crawl cùng lúc.
-- [ ] Lỗi của một handle không làm dừng toàn bộ job.
-- [ ] Có ghi log mỗi lần scheduler chạy.
-- [ ] Hiển thị lần chạy gần nhất và kết quả gần nhất.
+Confirm these files exist and are current:
 
-## 10. Báo cáo
+- `README.md`
+- `INSTALLATION.md`
+- `USER_GUIDE.md`
+- `TEST_PLAN.md`
+- `SECURITY_NOTES.md`
+- `CONTRIBUTING.md`
+- `CHANGELOG.md`
+- `docs/ARCHITECTURE.md`
+- `docs/DATABASE_SCHEMA.md`
+- `docs/CONFIGURATION.md`
+- `docs/OPERATIONS_RUNBOOK.md`
+- `docs/TROUBLESHOOTING.md`
+- `docs/AI_ANALYSIS_SPEC.md`
+- `docs/CRAWLER_COMPLIANCE.md`
+- `docs/REPORTING_SPEC.md`
+- `docs/DEMO_SCRIPT.md`
+- `docs/PROJECT_REPORT.md`
 
-- [ ] Xuất báo cáo PDF thành công.
-- [ ] Xuất báo cáo Excel thành công nếu có hỗ trợ.
-- [ ] Báo cáo hỗ trợ tiếng Việt Unicode.
-- [ ] Báo cáo có bảng điểm từng handle.
-- [ ] Báo cáo có nhận xét từng handle.
-- [ ] Báo cáo có khoảng thời gian lọc dữ liệu.
-- [ ] Báo cáo có danh sách handle được chọn.
-- [ ] File được lưu vào thư mục `reports`.
-- [ ] Có thể mở thư mục/file sau khi xuất.
+## Demo Assets
 
-Minh chứng cần lưu:
+Prepare:
 
-- Một file PDF demo.
-- Một file Excel demo nếu có.
+- Screenshot of successful build/test.
+- Screenshot of SQL Server database.
+- Screenshot of dashboard.
+- Screenshot of Chrome bot.
+- Screenshot of source detail.
+- Screenshot of analysis result.
+- Generated PDF report.
+- Generated Excel report.
 
-## 11. Tài liệu bàn giao
+## Final Handoff
 
-- [ ] `README.md` đầy đủ: giới thiệu, tính năng, công nghệ, cấu trúc, cài đặt, chạy dự án.
-- [ ] `INSTALLATION.md` đầy đủ cho người dùng Windows.
-- [ ] `USER_GUIDE.md` đầy đủ hướng dẫn thao tác ứng dụng.
-- [ ] Có schema SQL.
-- [ ] Có script dữ liệu mẫu.
-- [ ] Có test plan hoặc mô tả test case.
-- [ ] Có cảnh báo pháp lý/đạo đức về crawl dữ liệu.
-- [ ] Có cảnh báo giới hạn của đánh giá AI-generated code.
-- [ ] Có hướng dẫn cấu hình API key và database password an toàn.
+The release is ready when:
 
-## 12. Dữ liệu demo
-
-- [ ] Có 2 platform demo: Codeforces, VJudge.
-- [ ] Có ít nhất 5 handle demo.
-- [ ] Có submission demo đủ để xem dashboard.
-- [ ] Có source code demo bằng C++/Java/Python.
-- [ ] Có kết quả AI analysis demo.
-- [ ] Có điểm năng lực demo.
-- [ ] Có mức AI usage risk khác nhau để test báo cáo.
-- [ ] Dữ liệu demo được ghi rõ là giả lập, không khẳng định là dữ liệu thật.
-
-## 13. Video/hình ảnh minh họa
-
-- [ ] Có ảnh màn hình Dashboard nếu cần.
-- [ ] Có ảnh màn hình quản lý handle nếu cần.
-- [ ] Có ảnh màn hình xem source code nếu cần.
-- [ ] Có ảnh màn hình báo cáo nếu cần.
-- [ ] Có video demo luồng chính nếu giảng viên/yêu cầu bàn giao cần.
-
-Luồng video demo gợi ý:
-
-1. Mở ứng dụng.
-2. Nhập nick trên màn hình Bat dau.
-3. Chạy crawl trực tiếp.
-4. Xem source code.
-5. Phân tích AI.
-6. Xem bảng điểm.
-7. Xuất báo cáo.
-
-## 14. Kiểm tra lần cuối trước khi nộp
-
-- [ ] Xóa file cấu hình thật khỏi thư mục bàn giao nếu không cần thiết.
-- [ ] Xóa API key/password khỏi lịch sử chat, ảnh chụp, log và tài liệu.
-- [ ] Kiểm tra `.gitignore`.
-- [ ] Chạy lại build.
-- [ ] Chạy lại test.
-- [ ] Mở ứng dụng bằng bộ dữ liệu demo.
-- [ ] Xuất thử báo cáo.
-- [ ] Nén đúng thư mục dự án cần bàn giao.
-- [ ] Ghi rõ tài khoản/mật khẩu demo nếu có, nhưng không dùng secret thật.
-
-## 15. Kết luận bàn giao
-
-| Hạng mục | Đạt/Không đạt | Ghi chú |
-|---|---|---|
-| Build | | |
-| Test | | |
-| Database | | |
-| Security | | |
-| Crawler Direct Web | | |
-| AI Analyzer | | |
-| UI | | |
-| Report | | |
-| Documentation | | |
-| Demo data | | |
-
-Người kiểm tra xác nhận:
-
-- Họ tên:
-- Ngày:
-- Chữ ký:
+- Build passes.
+- App launches.
+- Database setup is reproducible.
+- Demo flow works.
+- Documentation is coherent.
+- Security checklist passes.

@@ -1,195 +1,200 @@
-# USER GUIDE - AI Code Analyzer Desktop
+# User Guide
 
-Tài liệu này dành cho người dùng cuối khi vận hành app.
+This guide explains the daily workflow for AI Code Analyzer Desktop.
 
-## 1. Mở ứng dụng
+## First Launch
 
-Chạy bằng Maven:
+Start the application:
 
 ```powershell
 mvn javafx:run
 ```
 
-Hoặc chạy jar đã build:
+The application opens a JavaFX desktop workspace with dashboard, handle management, source review, reports, and settings.
 
-```powershell
-java -jar target/ai-code-analyzer-desktop-1.0.0-SNAPSHOT-all.jar
-```
+If database configuration is invalid, fix `src/main/resources/application.properties` and restart the application.
 
-Trước khi mở app, đảm bảo SQL Server đang chạy và `DB_PASSWORD` đã được set.
+## Recommended Workflow
 
-## 1.1. Chuyển ngôn ngữ
+1. Start the application.
+2. Open or initialize the Chrome bot.
+3. Sign in to Codeforces and VJudge inside the Chrome bot profile.
+4. Add handles in the workspace.
+5. Crawl one handle or all active handles.
+6. Review source code and analysis results.
+7. Export reports.
+8. Enable scheduled daily crawl if needed.
 
-Ứng dụng hỗ trợ 2 ngôn ngữ: tiếng Việt và tiếng Anh.
+## Chrome Bot
 
-- Bấm nút `VI/EN` ở cuối sidebar bên trái để đổi ngôn ngữ ngay lập tức.
-- Khi đổi ngôn ngữ, màn hình hiện tại sẽ tự dựng lại với nhãn, nút, bảng và thông báo tương ứng.
-- Có thể đặt ngôn ngữ mặc định khi chạy app:
+The Chrome bot is a normal Chrome session launched with a DevTools port. It lets the app read pages that the signed-in browser session is allowed to view.
 
-```powershell
-mvn javafx:run "-Dapp.language=vi"
-mvn javafx:run "-Dapp.language=en"
-```
+Use it for:
 
-## 2. Chuẩn bị Chrome bot
+- Viewing Codeforces source pages that require login.
+- Viewing VJudge source pages that require login.
+- Handling platform login and captcha manually.
 
-Mở màn hình `Workspace`, bấm:
+Do not use it for:
+
+- Bypassing captcha.
+- Accessing private contests without permission.
+- Reusing a personal browser profile with sensitive sessions.
+
+Recommended steps:
+
+1. Click `Initialize Browser Bot`.
+2. Sign in to Codeforces or VJudge in the opened browser.
+3. Confirm that the DevTools endpoint is reachable:
 
 ```text
-Initialize Browser Bot
+http://localhost:9222/json/version
 ```
 
-Ứng dụng sẽ mở Chrome thật với profile riêng:
+## Add Handles
+
+In the handle workspace:
+
+1. Choose platform: Codeforces or VJudge.
+2. Enter the handle.
+3. Add display name, group, notes, and consent status when available.
+4. Keep the handle active if it should be included in full crawl runs.
+
+The app stores each handle uniquely per platform.
+
+## Crawl Submissions
+
+Use per-handle crawl when validating one user.
+
+Use full crawl when preparing a report or demo:
 
 ```text
-C:\CF_Bot_Profile
+Crawl & Analyze Now
 ```
 
-Trong Chrome này:
+The crawl stage:
 
-1. Đăng nhập Codeforces bằng tài khoản phụ có rating.
-2. Đăng nhập VJudge nếu cần crawl VJudge.
-3. Tự xử lý captcha/challenge nếu có.
-4. Có thể thu nhỏ Chrome sau khi đăng nhập.
+- Fetches submission metadata.
+- Retries source acquisition for submissions whose source is not crawled yet.
+- Stores source code when available.
+- Records unavailable states when source cannot be viewed.
+- Writes crawl logs for audit and troubleshooting.
 
-Không dùng nick chính để crawl tự động.
+## Source Availability
 
-Nếu nút mở Chrome không hoạt động trên máy hiện tại, trong `Workspace` có khu vực `Lệnh khôi phục Chrome`. Copy lệnh `Chrome hiện` và chạy thủ công trong PowerShell.
+Common source states:
 
-## 3. Quản lý nick
+| State | Meaning |
+|---|---|
+| `AVAILABLE` | Source was fetched and stored. |
+| `LOGIN_REQUIRED` | The browser session is not signed in or lacks session access. |
+| `PERMISSION_DENIED` | The current account cannot view the source. |
+| `CAPTCHA_REQUIRED` | The platform requires manual challenge resolution. |
+| `CONTEST_HIDDEN` | Source is hidden by contest or platform policy. |
+| `SOURCE_NOT_AVAILABLE` | Source cannot be retrieved from the platform. |
+| `OCR_REQUIRED` | VJudge source appears as an image and requires OCR. |
+| `OCR_FAILED` | OCR could not produce reliable source text. |
 
-Mở `Workspace`, dùng khối `Thêm nick nhanh`.
+Unavailable source is not a fatal error. The app still keeps metadata and explains why source was not stored.
 
-Các thao tác:
+## Analyze Source Code
 
-- Chọn nền tảng `Codeforces` hoặc `VJudge`.
-- Nhập handle.
-- Thêm, cập nhật, xóa hoặc làm mới danh sách.
+Analysis can run automatically after crawl or manually from source detail screens.
 
-Hệ thống không cho trùng `platform + handle`.
+The analyzer identifies:
 
-## 4. Crawl trực tiếp
+- Programming language.
+- Algorithms.
+- Data structures.
+- Time complexity.
+- Space complexity.
+- Code quality score.
+- Algorithm and data-structure scores.
+- AI-assistance risk signals.
+- Warnings and confidence.
 
-Mở `Workspace`.
+AI-risk output is a review signal only. It must not be treated as proof.
 
-1. Đảm bảo Chrome bot báo `Chrome CDP sẵn sàng`.
-2. Bấm `Crawl & phân tích ngay` để crawl toàn bộ nick và phân tích source sau đó.
-3. Hoặc bấm nút `Crawl` trên từng dòng nick để crawl riêng nick đó.
-4. Theo dõi toast, tổng quan vận hành và dữ liệu trong `AI Review` / `Reports`.
+## Offline And Demo Modes
 
-Hệ thống crawl toàn bộ submission mới, không áp trần cố định theo số lượng. Submission đã có trong DB sẽ được bỏ qua trước khi mở trang source.
+If no Gemini key is available, use one of these modes:
 
-## 5. Crawl tự động hằng ngày
+```properties
+ai.mock-mode=true
+```
 
-Mở `Settings`.
+or:
 
-1. Chọn `Daily run time`.
-2. Bật `Daily auto crawl all new code` hoặc nhãn tiếng Việt tương ứng.
-3. Bấm `Save Schedule` / `Lưu lịch`.
+```properties
+ai.provider=rule-based
+```
 
-Job `ScheduledExecutorService` chạy 1 ngày 1 lần, lấy nick active trong DB, tự mở Chrome headless CDP bằng profile bot nếu cần, crawl code mới, phân tích Gemini/rule-based và lưu kết quả.
+Mock and rule-based modes are suitable for demos, tests, and offline development.
 
-## 6. Phân tích source code
+## Dashboard
 
-Mở `AI Review`.
+Use the dashboard to review:
 
-1. Chọn source code đã crawl.
-2. Bấm `Phân tích AI` / `Analyze AI`.
-3. Chờ kết quả.
+- Total handles.
+- Submission volume.
+- Latest crawl status.
+- Analysis coverage.
+- Skill score overview.
+- Recent activity.
 
-Nếu có `GEMINI_API_KEY`, app gọi Gemini REST API. Nếu không có key hoặc bật mock mode, app dùng rule-based fallback.
+If dashboard numbers look empty, run the SQL seed script or crawl active handles.
 
-Kết quả gồm:
+## Reports
 
-- Cấu trúc dữ liệu.
-- Thuật toán.
-- Điểm chất lượng code.
-- Rủi ro AI.
-- Nhận xét.
+The Reports screen exports:
 
-Rủi ro AI chỉ là dấu hiệu tham khảo, không phải kết luận gian lận.
+- PDF evaluation reports.
+- Excel workbooks.
 
-## 7. Tổng quan vận hành
-
-Mở `Workspace`.
-
-Màn hình hiển thị:
-
-- Tổng số nick.
-- Tổng submission.
-- Source đã phân tích.
-- Lỗi crawl gần đây.
-- Chart submission theo nền tảng.
-- Chart điểm thuật toán.
-- Top nick theo tổng điểm.
-- Top nick có rủi ro AI cao.
-
-Bấm `Làm mới` / `Refresh` để tải lại dữ liệu từ SQL Server.
-
-## 8. Báo cáo
-
-Mở `Reports`.
-
-1. Chọn khoảng ngày.
-2. Chọn định dạng `PDF` hoặc `Excel`.
-3. Chọn có mở file sau khi xuất hay không.
-4. Bấm `Xuất báo cáo` / `Export report`.
-
-File được tạo trong:
+Generated files are stored under:
 
 ```text
 reports/
 ```
 
-## 9. Cấu hình Gemini API
+Before exporting, make sure:
 
-Set API key trong PowerShell:
+- At least one handle exists.
+- Submissions are crawled.
+- Source code exists or unavailable states are documented.
+- Analysis results are available.
+- Skill score calculation has completed.
 
-```powershell
-$env:GEMINI_API_KEY="your_gemini_api_key"
+## Scheduler
+
+Use Settings to enable daily crawl.
+
+Important settings:
+
+```properties
+scheduler.auto-crawl-enabled=false
+scheduler.daily-run-time=01:00
 ```
 
-Set lâu dài:
+The scheduler runs in the desktop process. If the application is closed, scheduled jobs do not run.
 
-```powershell
-setx GEMINI_API_KEY "your_gemini_api_key"
-```
+## Safe Usage Rules
 
-Sau `setx`, mở PowerShell mới rồi chạy app.
+- Crawl only public data or data the signed-in browser is authorized to view.
+- Do not bypass captcha or anti-bot challenges.
+- Do not store real API keys in source files.
+- Do not use AI-risk as a final misconduct decision.
+- Use demo accounts for classroom demonstrations.
 
-## 10. Lỗi thường gặp
+## Quick Demo Flow
 
-### Không mở được Chrome bot
-
-- Kiểm tra Chrome đã cài.
-- Kiểm tra `chrome.exe` có trong PATH.
-- Mở thủ công lệnh hiển thị trong `Workspace` -> `Lệnh khôi phục Chrome`.
-
-### Không crawl được source
-
-- Chrome debug chưa mở.
-- Chưa đăng nhập tài khoản phụ.
-- Submission không có quyền xem source.
-- Website đang yêu cầu captcha/challenge.
-- VJudge đang hiển thị source dạng ảnh nhưng chưa có `GEMINI_API_KEY` để OCR.
-
-### Không kết nối được DB
-
-- Kiểm tra SQL Server service.
-- Kiểm tra `application.properties`.
-- Kiểm tra `DB_PASSWORD`.
-- Kiểm tra đã chạy `sql/ai-code-analyzer-complete.sql`.
-
-### AI không trả kết quả
-
-- Kiểm tra internet.
-- Kiểm tra `GEMINI_API_KEY`.
-- Kiểm tra `ai.mock-mode`.
-- Nếu thiếu key, app vẫn có thể chạy rule-based fallback.
-
-## 11. Nguyên tắc sử dụng
-
-- Chỉ crawl dữ liệu bạn có quyền truy cập.
-- Không dùng tài khoản chính cho bot.
-- Không chia sẻ API key, DB password, cookie hoặc Chrome profile.
-- Không dùng điểm rủi ro AI như kết luận kỷ luật tự động.
+1. Launch the app.
+2. Show dashboard.
+3. Initialize Chrome bot.
+4. Show Codeforces/VJudge login state.
+5. Add or select demo handles.
+6. Run crawl.
+7. Open source detail.
+8. Run analysis.
+9. Show skill score.
+10. Export PDF and Excel reports.
